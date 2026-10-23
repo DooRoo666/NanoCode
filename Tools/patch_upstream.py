@@ -133,7 +133,7 @@ SUBAGENT_DISPATCH_INSERT = '''        case "subagent_dispatch":
 
 
 def _insert_once(root: pathlib.Path, rel: str, anchor: str, marker: str, insert: str,
-                 label: str, check_only: bool) -> int:
+                 label: str, check_only: bool, before: bool = False) -> int:
     """在 anchor 之后插入 insert；marker 已存在则视为已接线。"""
     path = root / rel
     if not path.exists():
@@ -150,25 +150,28 @@ def _insert_once(root: pathlib.Path, rel: str, anchor: str, marker: str, insert:
     print(f"  {label}: wired")
     if check_only:
         return 0
-    path.write_text(text.replace(anchor, anchor + insert, 1), encoding="utf-8")
+    replacement = (insert + anchor) if before else (anchor + insert)
+    path.write_text(text.replace(anchor, replacement, 1), encoding="utf-8")
     return 0
 
 
 def patch_codex(root: pathlib.Path, check_only: bool) -> int:
     steps = [
+        # (file, anchor, marker, insert, label, before)
         (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseCodexTool.definition",
-         TOOL_DEFS_INSERT, "tool definition (codex_exec)"),
+         TOOL_DEFS_INSERT, "tool definition (codex_exec)", False),
         (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseSubagentTool.dispatchDefinition",
-         SUBAGENT_DEFS_INSERT, "tool definitions (subagent)"),
+         SUBAGENT_DEFS_INSERT, "tool definitions (subagent)", False),
+        # dispatch 必须插在 case 标签之前，否则会掏空 shell_execute 的函数体
         (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "codex_exec":',
-         TOOL_DISPATCH_INSERT, "tool dispatch (codex_exec)"),
+         TOOL_DISPATCH_INSERT, "tool dispatch (codex_exec)", True),
         (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "subagent_dispatch":',
-         SUBAGENT_DISPATCH_INSERT, "tool dispatch (subagent)"),
+         SUBAGENT_DISPATCH_INSERT, "tool dispatch (subagent)", True),
         (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
-         SETTINGS_INSERT, "settings card (Codex)"),
+         SETTINGS_INSERT, "settings card (Codex)", False),
     ]
-    for rel, anchor, marker, insert, label in steps:
-        rc = _insert_once(root, rel, anchor, marker, insert, label, check_only)
+    for rel, anchor, marker, insert, label, before in steps:
+        rc = _insert_once(root, rel, anchor, marker, insert, label, check_only, before=before)
         if rc:
             return rc
     return 0

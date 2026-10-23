@@ -100,8 +100,9 @@ enum NanoMuseRuntimeManifest {
             "\"\(prefix)\(package.archiveURL)\""
         }.joined(separator: " ")
 
+        // 8 空格前缀与脚本里的缩进对齐，否则 Swift 多行字符串会报 insufficient indentation
         let pathLines = package.pathEntries.map { entry in
-            "  [ -d \"$DEST/\(entry)\" ] && echo \"/opt/runtimes/\(package.id)/\(entry)\" >> \"$PATHS\""
+            "        [ -d \"$DEST/\(entry)\" ] && echo \"/opt/runtimes/\(package.id)/\(entry)\" >> \"$PATHS\""
         }.joined(separator: "\n")
 
         return #"""
@@ -147,7 +148,7 @@ enum NanoMuseRuntimeManifest {
         echo "STEP 5/5 写入 PATH 并探测"
         PATHS="/etc/profile.d/nanocodex-paths.list"
         : > "$PATHS"
-__PATH_LINES__
+        __PATH_LINES__
         {
           echo "# 由 nanoCode 运行时安装器维护"
           echo 'export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"'
