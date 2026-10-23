@@ -1,0 +1,12 @@
+# 上游在 CI 里现拉，不进仓库
+upstream/
+_t/
+build/
+dist/
+*.tipa
+
+# python / editor
+__pycache__/
+*.pyc
+.venv/
+.DS_Store

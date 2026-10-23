@@ -1,0 +1,146 @@
+name: iOS · TIPA (TrollStore)
+
+# 在 nanoMuse 自己的 Swift App 上构建，加入我们的 Codex 引擎，产出 .tipa。
+# 上游不复制进本仓库：CI 现拉 nanoMuse（含 iSH/proot 子模块）再打覆盖层，
+# 免去 48 MB 工程 + 数百 MB 子模块的搬运，也让"我们改了什么"一眼可见。
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: nanoMuse 的 tag/branch/commit
+        default: main
+  push:
+    branches: [main]
+    paths:
+      - 'overlay/**'
+      - 'Tools/**'
+      - '.github/workflows/ios-tipa.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-tipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tipa:
+    name: xcodebuild → NanoCode.tipa
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      GO_VERSION: "1.25"
+      UPSTREAM_REPO: nano-muse/nanoMuse
+      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout nanoMuse (submodules: iSH, proot)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: upstream
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Record upstream identity
+        run: |
+          echo "NANOMUSE_SHA=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_ENV"
+          echo "resolved $UPSTREAM_REPO@$(git -C upstream rev-parse --short HEAD)"
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: upstream/android/deps/rclone-mobile/go.sum
+
+      - name: Homebrew (iSH kernel + rootfs tooling + ldid)
+        run: brew install ninja meson llvm lld libarchive pkg-config ldid
+
+      - name: Build-time configuration
+        working-directory: upstream/android/src/ios
+        run: cp Configs/ProviderCustomization.xcconfig.example Configs/ProviderCustomization.xcconfig
+
+      - name: Pinned iSH revision
+        id: ish
+        run: echo "rev=$(git -C upstream rev-parse HEAD:android/deps/ish)" >> "$GITHUB_OUTPUT"
+
+      - name: Native dependency cache
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            upstream/android/deps/libs
+            upstream/android/deps/include
+            upstream/android/deps/resources
+            upstream/android/deps/frameworks
+            upstream/android/deps/lame-build
+          key: ios-deps-${{ runner.os }}-${{ steps.ish.outputs.rev }}-${{ hashFiles('upstream/android/deps/*.sh') }}
+
+      - name: Native dependencies (LAME → FFmpeg → iSH → rootfs → rclone)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        working-directory: upstream/android
+        run: |
+          ./deps/build_lame.sh
+          ./deps/build_ffmpeg.sh
+          ./deps/build_ish.sh
+          ./deps/prepare_alpine_rootfs.sh
+          ./deps/build_rclone_ios.sh
+
+      - name: Apply overlay (Codex engine)
+        run: |
+          set -euo pipefail
+          cp overlay/android/src/ios/NanoMuse/*.swift upstream/android/src/ios/NanoMuse/
+          python3 Tools/apply_overlay.py \
+            --project upstream/android/src/ios/Minis.xcodeproj \
+            --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
+          ls -l upstream/android/src/ios/NanoMuse/ | tail -3
+
+      - name: Build (unsigned)
+        working-directory: upstream/android/src/ios
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Minis.xcodeproj -scheme Minis -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= \
+            -skipPackagePluginValidation -skipMacroValidation \
+            2>&1 | tee build/xcodebuild.log | tail -40
+          grep -q "BUILD SUCCEEDED" build/xcodebuild.log
+
+      - name: Warnings in our NanoMuse files
+        working-directory: upstream/android/src/ios
+        run: |
+          if grep -E "NanoMuseCodexEngine\.swift:[0-9]+:[0-9]+: warning:" build/xcodebuild.log | sort -u | tee warnings.txt | grep -q .; then
+            echo "::error::NanoMuseCodexEngine.swift has warnings"; cat warnings.txt; exit 1
+          fi
+
+      - name: Locate built app
+        id: app
+        working-directory: upstream/android/src/ios
+        run: |
+          APP=$(find build/DerivedData/Build/Products -maxdepth 2 -name 'Minis.app' -type d | head -1)
+          [ -n "$APP" ] || { echo "::error::Minis.app not found"; exit 1; }
+          echo "path=$APP" >> "$GITHUB_OUTPUT"
+          echo "found $APP"
+
+      - name: Package TIPA (three-tier ldid signing)
+        run: bash Tools/make_tipa.sh "upstream/android/src/ios/${{ steps.app.outputs.path }}" dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NanoCode-tipa
+          path: dist/NanoCode.tipa
+          if-no-files-found: error
+
+      - name: Log excerpt on failure
+        if: failure()
+        working-directory: upstream/android/src/ios
+        run: grep -E "error:" build/xcodebuild.log | sort -u | head -30 || true
