@@ -268,7 +268,6 @@ enum NanoMuseNativeRuntime {
     /// 解包分流：
     ///   · `.tar.gz` → 随包 ca-filetool（原生 Mach-O，含 tar）
     ///   · `.tar.zst` / `.tar.xz` → 交给 Alpine（apk 提供 zstd/xz），
-    ///     用 `mount -t real` 把 App 容器目录挂进 Alpine，产物直接落回容器内，
     ///     这样解出来的 Mach-O 才能被 posix_spawn 执行。
     private static func extract(payload: URL, into destination: URL, log: Log) async -> Bool {
         let name = payload.lastPathComponent.lowercased()

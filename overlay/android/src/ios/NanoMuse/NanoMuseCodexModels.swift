@@ -59,6 +59,24 @@ enum NanoMuseCodexModels {
         return ""
     }
 
+    // MARK: - 复用 nanoMuse 的模型目录（follow 模式）
+
+    /// 站在上游肩膀上：`ProviderConfigStore.fetchModelsForInstance` 已经处理了
+    /// `appendV1Suffix`、自定义 UA、OAuth 路径等细节，比自己拼 `/v1/models` 靠谱。
+    @MainActor
+    static func fetchInheritedModels() async throws -> [String] {
+        let store = ProviderConfigStore.shared
+        let cloudID = NanoMuseCloud.instance?.id
+        guard let instance = store.instances.first(where: { candidate in
+            candidate.isEnabled && candidate.hasAnyCredential && candidate.id != cloudID
+        }) else {
+            throw NSError(domain: "NanoCodex", code: 10,
+                          userInfo: [NSLocalizedDescriptionKey: "「设置 › 模型」里还没有可用的 provider"])
+        }
+        let models = try await ProviderConfigStore.fetchModelsForInstance(instance, forceRefresh: true)
+        return models.map(\.id).sorted()
+    }
+
     // MARK: - 在线拉模型
 
     /// 依次尝试 `<base>/models`、`<base>/v1/models`，兼容两种常见写法。

@@ -595,10 +595,17 @@ struct NanoMuseCodexView: View {
         modelError = nil
         fetchingModels = true
         let credential = NanoMuseCodexSettings.resolved()
+        let mode = source
         Task {
             do {
-                let list = try await NanoMuseCodexModels.fetchModels(baseURL: credential.baseURL,
+                // 跟随 nano 时用上游的模型目录；自填第三方时才直连 /v1/models
+                let list: [String]
+                if mode == .followNano {
+                    list = try await NanoMuseCodexModels.fetchInheritedModels()
+                } else {
+                    list = try await NanoMuseCodexModels.fetchModels(baseURL: credential.baseURL,
                                                                      apiKey: credential.apiKey)
+                }
                 models = list
                 if selectedModel.isEmpty, let first = list.first {
                     selectedModel = first
