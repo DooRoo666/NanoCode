@@ -101,6 +101,7 @@ jobs:
         working-directory: upstream/android/src/ios
         run: |
           set -o pipefail
+          mkdir -p build
           xcodebuild build \
             -project Minis.xcodeproj -scheme Minis -configuration Release \
             -destination 'generic/platform=iOS' \
@@ -108,8 +109,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY= DEVELOPMENT_TEAM= \
             -skipPackagePluginValidation -skipMacroValidation \
-            2>&1 | tee build/xcodebuild.log | tail -40
+            > build/xcodebuild.log 2>&1 || true
+          grep -E "error:" build/xcodebuild.log | sort -u | head -40 || true
+          tail -25 build/xcodebuild.log
           grep -q "BUILD SUCCEEDED" build/xcodebuild.log
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: upstream/android/src/ios/build/xcodebuild.log
+          if-no-files-found: warn
 
       - name: Warnings in our NanoMuse files
         working-directory: upstream/android/src/ios

@@ -3,27 +3,36 @@ import Darwin
 
 /// Codex 引擎：在 nanoMuse 的 iOS App 里通过 app-server 协议驱动 `codex`。
 ///
-/// 它是「覆盖层」文件，放进 `android/src/ios/NanoMuse/` 后由 `Tools/apply_overlay.py`
-/// 加进 Minis target。不依赖 App 里的任何其它类型，因此可以先独立编译通过再接业务。
+/// 覆盖层文件，放进 `android/src/ios/NanoMuse/`（该目录是 Xcode 16 同步文件夹，自动进 target）。
+/// 协议与桌面端 `nanomuse/engines/codex/client.py` 一致：
+///   initialize → thread/start → turn/start → 通知流；
+///   server→client 的审批请求交给 approval 回调，**默认拒绝**。
 ///
-/// 协议与 Python 侧 `nanomuse/engines/codex/client.py` 完全一致：
-///   initialize → thread/start → turn/start → 通知流；server→client 的审批请求
-///   交给 `approval` 回调，默认拒绝（不给「无人值守也能跑」的口子）。
+/// Swift 6 严格并发注意：跨 actor 传递的 JSON 一律用 `Data`，
+/// 而不是 `[String: Any]`（后者不是 Sendable，会直接编译失败）。
 public actor NanoMuseCodexEngine {
 
-    public struct RpcError: Error, CustomStringConvertible {
+    /// 一个 JSON 对象结果。`@unchecked Sendable` 是必要的：字典本身不带并发标注，
+    /// 但它在引擎内部只在 actor 与 continuation 之间单向传递，不做共享写。
+    public struct Payload: @unchecked Sendable {
+        public let json: [String: Any]
+        public init(_ json: [String: Any]) { self.json = json }
+    }
+
+    public struct RpcError: Error, CustomStringConvertible, Sendable {
         public let code: Int?
         public let message: String
         public var description: String { "rpc \(code.map(String.init) ?? "-"): \(message)" }
     }
 
     public enum Event: Sendable {
-        case notification(method: String, params: [String: Any])
+        /// app-server 主动推送；`paramsJSON` 是原始参数 JSON，避免传递非 Sendable 字典。
+        case notification(method: String, paramsJSON: Data)
         case exited(status: Int32)
     }
 
-    /// 审批回调：收到 app-server 的 server→client 请求，返回应答字典（默认：拒绝）。
-    public typealias ApprovalHandler = @Sendable ([String: Any]) async -> [String: Any]
+    /// 审批回调：入参与返回都是 JSON 的 `Data` 形式，保持 Sendable。
+    public typealias ApprovalHandler = @Sendable (_ requestJSON: Data) async -> Data
 
     private let binary: String
     private let workspace: String
@@ -33,7 +42,7 @@ public actor NanoMuseCodexEngine {
     private var stdinFD: Int32 = -1
     private var stdoutFD: Int32 = -1
     private var nextID = 1
-    private var pending: [Int: CheckedContinuation<[String: Any], Error>] = [:]
+    private var pending: [Int: CheckedContinuation<Payload, Error>] = [:]
     private var buffer = Data()
     private var reader: Task<Void, Never>?
     private var onEvent: (@Sendable (Event) -> Void)?
@@ -60,7 +69,7 @@ public actor NanoMuseCodexEngine {
     public func start(environment: [String: String] = [:]) throws {
         guard pid == 0 else { return }
 
-        var stdinPipe: [Int32] = [-1, -1]   // [read, write]
+        var stdinPipe: [Int32] = [-1, -1]
         var stdoutPipe: [Int32] = [-1, -1]
         guard pipe(&stdinPipe) == 0, pipe(&stdoutPipe) == 0 else {
             throw RpcError(code: nil, message: "pipe() failed: \(String(cString: strerror(errno)))")
@@ -81,8 +90,8 @@ public actor NanoMuseCodexEngine {
         var argv = Self.cStrings([binary, "app-server"])
         var envp = Self.cStrings(Self.environment(overrides: environment))
         var childPID: pid_t = 0
-
         let rc = posix_spawn(&childPID, binary, &actions, &attr, &argv, &envp)
+
         Self.freeCStrings(&argv)
         Self.freeCStrings(&envp)
         posix_spawn_file_actions_destroy(&actions)
@@ -93,13 +102,14 @@ public actor NanoMuseCodexEngine {
         guard rc == 0 else {
             close(stdinPipe[1])
             close(stdoutPipe[0])
-            throw RpcError(code: nil, message: "posix_spawn failed (\(rc)): \(String(cString: strerror(rc)))")
+            throw RpcError(code: nil, message: "posix_spawn \(rc): \(String(cString: strerror(rc)))")
         }
 
         pid = childPID
         stdinFD = stdinPipe[1]
         stdoutFD = stdoutPipe[0]
 
+        // 读完 stdout 的循环放在 detached task，闭包里只捕获 actor 自身（Sendable）
         reader = Task.detached(priority: .userInitiated) { [weak self] in
             await self?.readLoop()
         }
@@ -116,26 +126,26 @@ public actor NanoMuseCodexEngine {
         }
         let waiters = pending
         pending.removeAll()
-        for (_, cont) in waiters {
-            cont.resume(throwing: RpcError(code: nil, message: "engine closed"))
+        for (_, continuation) in waiters {
+            continuation.resume(throwing: RpcError(code: nil, message: "engine closed"))
         }
     }
 
     // MARK: - 请求
 
     @discardableResult
-    public func request(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {
+    public func request(_ method: String, _ params: [String: Any] = [:]) async throws -> Payload {
         guard isRunning else { throw RpcError(code: nil, message: "engine not running") }
         let id = nextID
         nextID += 1
-        let payload: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
+        write(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
 
         return try await withCheckedThrowingContinuation { continuation in
             pending[id] = continuation
-            write(payload)
+            let timeout = requestTimeout
             Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64((self?.requestTimeout ?? 60) * 1_000_000_000))
-                await self?.timeout(id: id, method: method)
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                await self?.expire(id: id, method: method)
             }
         }
     }
@@ -144,44 +154,44 @@ public actor NanoMuseCodexEngine {
         write(["jsonrpc": "2.0", "method": method, "params": params])
     }
 
-    private func timeout(id: Int, method: String) {
-        guard let cont = pending.removeValue(forKey: id) else { return }
-        cont.resume(throwing: RpcError(code: nil, message: "\(method) timed out"))
+    private func expire(id: Int, method: String) {
+        guard let continuation = pending.removeValue(forKey: id) else { return }
+        continuation.resume(throwing: RpcError(code: nil, message: "\(method) timed out"))
     }
 
-    // MARK: - 高层操作
-
-    /// 起一轮编码任务，返回 turn 结束时的文本。
-    public func runTurn(prompt: String, threadID: inout String?) async throws -> String {
-        if threadID == nil {
+    /// 起一轮编码任务。返回 threadId（首轮自动创建）。
+    public func startTurn(prompt: String, threadID: String?) async throws -> String {
+        let thread: String
+        if let existing = threadID {
+            thread = existing
+        } else {
             let started = try await request("thread/start", ["cwd": workspace])
-            threadID = ((started["thread"] as? [String: Any])?["id"] as? String)
-        }
-        guard let thread = threadID else {
-            throw RpcError(code: nil, message: "thread/start returned no id")
+            guard let created = (started.json["thread"] as? [String: Any])?["id"] as? String else {
+                throw RpcError(code: nil, message: "thread/start returned no id")
+            }
+            thread = created
         }
         _ = try await request("turn/start", [
             "threadId": thread,
             "input": [["type": "text", "text": prompt]],
         ])
-        return ""   // 文本通过 onEvent 的 notification 流式返回
+        return thread
     }
 
     // MARK: - 读写
 
     private func write(_ object: [String: Any]) {
         guard stdinFD >= 0,
-              let data = try? JSONSerialization.data(withJSONObject: object, options: []),
-              var line = String(data: data, encoding: .utf8) else { return }
-        line += "\n"
-        let bytes = Array(line.utf8)
-        bytes.withUnsafeBufferPointer { ptr in
-            guard let base = ptr.baseAddress else { return }
-            var written = 0
-            while written < bytes.count {
-                let n = Darwin.write(stdinFD, base + written, bytes.count - written)
-                if n <= 0 { break }
-                written += n
+              let data = try? JSONSerialization.data(withJSONObject: object),
+              let text = String(data: data, encoding: .utf8) else { return }
+        let bytes = Array((text + "\n").utf8)
+        bytes.withUnsafeBufferPointer { pointer in
+            guard let base = pointer.baseAddress else { return }
+            var offset = 0
+            while offset < bytes.count {
+                let written = Darwin.write(stdinFD, base + offset, bytes.count - offset)
+                if written <= 0 { break }
+                offset += written
             }
         }
     }
@@ -194,59 +204,64 @@ public actor NanoMuseCodexEngine {
             if chunk.isEmpty { break }
             buffer.append(chunk)
             while let newline = buffer.firstIndex(of: 0x0A) {
-                let line = buffer[buffer.startIndex..<newline]
+                let line = Data(buffer[buffer.startIndex..<newline])
                 buffer.removeSubrange(buffer.startIndex...newline)
                 if !line.isEmpty {
-                    await handle(line: Data(line))
+                    await handle(line: line)
                 }
             }
         }
-        let status = await reap()
+        let status = reap()
         onEvent?(.exited(status: status))
         let waiters = pending
         pending.removeAll()
-        for (_, cont) in waiters {
-            cont.resume(throwing: RpcError(code: nil, message: "codex exited (\(status))"))
+        for (_, continuation) in waiters {
+            continuation.resume(throwing: RpcError(code: nil, message: "codex exited (\(status))"))
         }
     }
 
     private func handle(line: Data) async {
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
 
-        // 应答：id + result/error
         if let id = object["id"] as? Int, object["method"] == nil {
-            guard let cont = pending.removeValue(forKey: id) else { return }
+            guard let continuation = pending.removeValue(forKey: id) else { return }
             if let error = object["error"] as? [String: Any] {
-                cont.resume(throwing: RpcError(code: error["code"] as? Int,
-                                               message: error["message"] as? String ?? "unknown"))
+                continuation.resume(throwing: RpcError(code: error["code"] as? Int,
+                                                       message: error["message"] as? String ?? "unknown"))
             } else {
-                cont.resume(returning: object["result"] as? [String: Any] ?? [:])
+                continuation.resume(returning: Payload(object["result"] as? [String: Any] ?? [:]))
             }
             return
         }
 
-        // server -> client 请求：走审批，默认拒绝
         if let id = object["id"] as? Int, let method = object["method"] as? String {
             let params = object["params"] as? [String: Any] ?? [:]
-            let request: [String: Any] = ["id": id, "method": method, "params": params]
-            let answer: [String: Any]
+            let requestJSON = (try? JSONSerialization.data(withJSONObject: [
+                "id": id, "method": method, "params": params,
+            ])) ?? Data()
+
+            let answerJSON: Data
             if let approval {
-                answer = await approval(request)
+                answerJSON = await approval(requestJSON)
             } else {
-                answer = ["decision": "denied", "reason": "no approval handler"]
+                answerJSON = (try? JSONSerialization.data(withJSONObject: [
+                    "decision": "denied", "reason": "no approval handler",
+                ])) ?? Data("{\"decision\":\"denied\"}".utf8)
             }
+            let answer = (try? JSONSerialization.jsonObject(with: answerJSON) as? [String: Any]) ?? [:]
             write(["jsonrpc": "2.0", "id": id, "result": answer])
             return
         }
 
-        // 通知
         if let method = object["method"] as? String {
             let params = object["params"] as? [String: Any] ?? [:]
-            onEvent?(.notification(method: method, params: params))
+            let paramsJSON = (try? JSONSerialization.data(withJSONObject: params)) ?? Data()
+            onEvent?(.notification(method: method, paramsJSON: paramsJSON))
         }
     }
 
-    private func reap() async -> Int32 {
+    /// stdout EOF 之后阻塞等待子进程退出。此时已无其它 actor 工作，阻塞是安全的。
+    private func reap() -> Int32 {
         guard pid > 0 else { return -1 }
         var status: Int32 = 0
         waitpid(pid, &status, 0)
@@ -254,7 +269,7 @@ public actor NanoMuseCodexEngine {
         return status
     }
 
-    // MARK: - C 字符串工具
+    // MARK: - C 字符串
 
     private static func cStrings(_ strings: [String]) -> [UnsafeMutablePointer<CChar>?] {
         var out = strings.map { strdup($0) }
