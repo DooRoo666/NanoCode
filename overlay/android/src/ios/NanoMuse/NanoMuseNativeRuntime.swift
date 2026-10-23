@@ -295,68 +295,80 @@ enum NanoMuseNativeRuntime {
         return result.exitCode == 0
     }
 
-    /// 用 iSH 的 `mount -t real` 把宿主目录暴露给 Alpine，在 Alpine 里解 zstd/xz。
+    /// 借 Alpine 解 zstd/xz：**直接读写 iSH 的 rootfs 目录**（`RootfsManager.shared.dataPath`，
+    /// 即 `Documents/alpine-rootfs/data`），不需要 mount —— nanoMuse 自己也是这么用这个路径的。
+    /// 流程：把载荷复制进 `/tmp/<staging>` → Alpine 里 `apk add zstd` 解压 → 读回 `out/` → 搬进最终目录。
     private static func extractViaAlpine(payload: URL, into destination: URL, log: Log) async -> Bool {
-        let hostDirectory = payload.deletingLastPathComponent().path
-        let payloadName = payload.lastPathComponent
-        let outName = "out-\(UUID().uuidString.prefix(6))"
+        let rootfsData = RootfsManager.shared.dataPath
+        guard FileManager.default.fileExists(atPath: rootfsData.path) else {
+            await log.add("ERR iSH rootfs 还没安装好，无法借 Alpine 解压")
+            return false
+        }
+
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let stagingHost = rootfsData.appendingPathComponent("tmp/nanocodex-\(token)")
+        let stagingGuest = "/tmp/nanocodex-\(token)"
+        let payloadName = "payload-" + payload.lastPathComponent
+
+        do {
+            try FileManager.default.createDirectory(at: stagingHost, withIntermediateDirectories: true)
+            let target = stagingHost.appendingPathComponent(payloadName)
+            try FileManager.default.copyItem(at: payload, to: target)
+        } catch {
+            await log.add("ERR 复制载荷到 rootfs 失败：\(error.localizedDescription)")
+            return false
+        }
+        let sizeMB = ((try? FileManager.default.attributesOfItem(atPath: stagingHost.path)[.size] as? Int) ?? 0)
+        await log.add("  载荷已放入 rootfs：\(stagingGuest)/\(payloadName)")
 
         let script = #"""
         set -u
-        mkdir -p /mnt/nanocodex
-        if ! mount -t real __HOST__ /mnt/nanocodex 2>/dev/null; then
-          echo "MOUNT_FAIL"
-          exit 9
-        fi
-        echo "MOUNT_OK 已挂载宿主目录"
-        cd /mnt/nanocodex || exit 10
-        rm -rf __OUT__ && mkdir -p __OUT__
+        cd __GUEST__ || exit 10
+        rm -rf out && mkdir -p out
         case "__NAME__" in
           *.zst)
             command -v zstd >/dev/null 2>&1 || apk add --no-cache zstd >/dev/null 2>&1
             command -v zstd >/dev/null 2>&1 || { echo "NO_ZSTD"; exit 11; }
-            zstd -d -q -f "__NAME__" -o "__NAME__.tar" || exit 12
-            tar xf "__NAME__.tar" -C __OUT__ || exit 13
-            rm -f "__NAME__.tar"
+            zstd -d -q -f "__NAME__" -o data.tar || exit 12
+            tar xf data.tar -C out || exit 13
+            rm -f data.tar
             ;;
           *.xz)
             command -v xz >/dev/null 2>&1 || apk add --no-cache xz >/dev/null 2>&1
-            tar xJf "__NAME__" -C __OUT__ || exit 13
+            tar xJf "__NAME__" -C out || exit 13
             ;;
-          *) echo "UNSUPPORTED"; exit 14 ;;
+          *)
+            echo "UNSUPPORTED"; exit 14 ;;
         esac
         echo "EXTRACT_OK"
-        find __OUT__ -maxdepth 3 -type f | head -8
+        find out -maxdepth 3 -type f | head -8
         """#
-            .replacingOccurrences(of: "__HOST__", with: "'" + hostDirectory + "'")
+            .replacingOccurrences(of: "__GUEST__", with: stagingGuest)
             .replacingOccurrences(of: "__NAME__", with: payloadName)
-            .replacingOccurrences(of: "__OUT__", with: outName)
 
         let (code, output) = await NanoMuseCodex.runCommand(script, timeout: 1200)
         for line in output.split(separator: "\n") {
             await log.add("  " + String(line))
         }
         guard code == 0, output.contains("EXTRACT_OK") else {
-            if output.contains("MOUNT_FAIL") {
-                await log.add("  提示：这条 iSH 构建不支持 mount -t real。")
-                await log.add("        可用「运行时 › Alpine」安装该包，或把 deb 转成 .tar.gz 后再来。")
-            } else if output.contains("NO_ZSTD") {
-                await log.add("  Alpine 里 apk add zstd 失败（可能没有网络/源）。")
+            if output.contains("NO_ZSTD") {
+                await log.add("  Alpine 里 apk add zstd 失败（源/网络问题）")
             }
+            try? FileManager.default.removeItem(at: stagingHost)
+            await log.add("ERR Alpine 解压未成功（\(sizeMB)）")
             return false
         }
 
-        // 把 Alpine 解出来的内容搬进最终目录
-        let produced = payload.deletingLastPathComponent().appendingPathComponent(outName)
+        let produced = stagingHost.appendingPathComponent("out")
         let children = (try? FileManager.default.contentsOfDirectory(atPath: produced.path)) ?? []
-        await log.add("  搬运 \(children.count) 项到最终目录")
+        await log.add("  搬运 \(children.count) 项到 App 容器")
         for child in children {
             let from = produced.appendingPathComponent(child)
             let to = destination.appendingPathComponent(child)
             try? FileManager.default.removeItem(at: to)
             try? FileManager.default.moveItem(at: from, to: to)
         }
-        try? FileManager.default.removeItem(at: produced)
+        try? FileManager.default.removeItem(at: stagingHost)
         return true
     }
 
