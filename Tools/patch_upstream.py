@@ -104,6 +104,22 @@ def _insert(root: pathlib.Path, rel: str, anchor: str, insert: str, label: str,
     return 0
 
 
+HOST_DEFS_INSERT = "            NanoMuseHostShellTool.definition,\n"
+
+HOST_DISPATCH_INSERT = '''        case "host_exec":
+            let hostCommand = (toolArgs["command"] as? String) ?? ""
+            let hostTimeout = TimeInterval((toolArgs["timeout"] as? Int) ?? 60)
+            if hostCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                toolOutput = "Error: missing required 'command' parameter."
+                toolSuccess = false
+            } else {
+                let outcome = await NanoMuseHostShellTool.execute(command: hostCommand, timeout: hostTimeout)
+                toolOutput = outcome.text
+                toolSuccess = outcome.exitCode == 0
+            }
+
+'''
+
 SUBAGENT_DEFS_INSERT = (
     "            NanoMuseSubagentTool.dispatchDefinition,\n"
     "            NanoMuseSubagentTool.resultDefinition,\n"
@@ -182,6 +198,10 @@ def patch_codex(root: pathlib.Path, check_only: bool) -> int:
          TOOL_DISPATCH_INSERT, "tool dispatch (codex_exec)", True),
         (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "subagent_dispatch":',
          SUBAGENT_DISPATCH_INSERT, "tool dispatch (subagent)", True),
+        (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseHostShellTool.definition",
+         HOST_DEFS_INSERT, "tool definition (host_exec)", False),
+        (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "host_exec":',
+         HOST_DISPATCH_INSERT, "tool dispatch (host_exec)", True),
         (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
          SETTINGS_INSERT, "settings card (Codex)", False),
         (MERMAID_FILE, MERMAID_ANCHOR, "NanoMuseMermaidAttachment.makeView",
