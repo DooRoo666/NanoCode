@@ -96,12 +96,12 @@ public actor NanoMuseCodexEngine {
         Self.freeCStrings(&envp)
         posix_spawn_file_actions_destroy(&actions)
         posix_spawnattr_destroy(&attr)
-        close(stdinPipe[0])
-        close(stdoutPipe[1])
+        Darwin.close(stdinPipe[0])
+        Darwin.close(stdoutPipe[1])
 
         guard rc == 0 else {
-            close(stdinPipe[1])
-            close(stdoutPipe[0])
+            Darwin.close(stdinPipe[1])
+            Darwin.close(stdoutPipe[0])
             throw RpcError(code: nil, message: "posix_spawn \(rc): \(String(cString: strerror(rc)))")
         }
 
@@ -115,13 +115,13 @@ public actor NanoMuseCodexEngine {
         }
     }
 
-    public func close() {
+    public func shutdown() {
         reader?.cancel()
         reader = nil
-        if stdinFD >= 0 { close(stdinFD); stdinFD = -1 }
-        if stdoutFD >= 0 { close(stdoutFD); stdoutFD = -1 }
+        if stdinFD >= 0 { Darwin.close(stdinFD); stdinFD = -1 }
+        if stdoutFD >= 0 { Darwin.close(stdoutFD); stdoutFD = -1 }
         if pid > 0 {
-            kill(pid, SIGTERM)
+            Darwin.kill(pid, SIGTERM)
             pid = 0
         }
         let waiters = pending
@@ -198,16 +198,16 @@ public actor NanoMuseCodexEngine {
 
     private func readLoop() async {
         guard stdoutFD >= 0 else { return }
-        let handle = FileHandle(fileDescriptor: stdoutFD, closeOnDealloc: false)
+        let output = FileHandle(fileDescriptor: stdoutFD, closeOnDealloc: false)
         while !Task.isCancelled {
-            let chunk = handle.availableData
+            let chunk = output.availableData
             if chunk.isEmpty { break }
             buffer.append(chunk)
             while let newline = buffer.firstIndex(of: 0x0A) {
                 let line = Data(buffer[buffer.startIndex..<newline])
                 buffer.removeSubrange(buffer.startIndex...newline)
                 if !line.isEmpty {
-                    await handle(line: line)
+                    await consume(line: line)
                 }
             }
         }
@@ -220,7 +220,7 @@ public actor NanoMuseCodexEngine {
         }
     }
 
-    private func handle(line: Data) async {
+    private func consume(line: Data) async {
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
 
         if let id = object["id"] as? Int, object["method"] == nil {
