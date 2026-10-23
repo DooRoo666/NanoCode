@@ -35,6 +35,7 @@ enum NanoMuseHelperRunner {
                     timeout: TimeInterval = 60,
                     extraEnvironment: [String: String] = [:],
                     workingDirectory: String? = nil) -> Result {
+        _ = workingDirectory   // iOS 没有 addchdir_np；需要 cwd 时用 bash.real -lc 包一层
         let started = Date()
         let executable = name.hasPrefix("/") ? name : path(name)
         guard FileManager.default.isExecutableFile(atPath: executable) else {
@@ -55,11 +56,6 @@ enum NanoMuseHelperRunner {
         posix_spawn_file_actions_init(&actions)
         posix_spawn_file_actions_adddup2(&actions, fd, 1)
         posix_spawn_file_actions_adddup2(&actions, fd, 2)
-
-        if let workingDirectory, !workingDirectory.isEmpty {
-            // iOS 13+ 才有；失败就让目标自己在默认目录跑
-            posix_spawn_file_actions_addchdir_np(&actions, workingDirectory)
-        }
 
         var argv = cStrings([executable] + arguments)
         var envp = cStrings(environment(extra: extraEnvironment))

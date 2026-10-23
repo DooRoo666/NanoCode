@@ -364,12 +364,14 @@ public enum NanoMuseCodex {
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
             if let model, !model.isEmpty { env["CODEX_MODEL"] = model }
 
+            // iOS 没有 posix_spawn 的 chdir，用随包的 bash 包一层设置工作目录
+            let command = "cd \(quote(workspace)) 2>/dev/null || mkdir -p \(quote(workspace)) && cd \(quote(workspace)); "
+                + "exec \(quote(native.path)) " + args.map { quote($0) }.joined(separator: " ")
             let result = await Task.detached(priority: .userInitiated) {
-                NanoMuseHelperRunner.run(native.path,
-                                         arguments: args,
+                NanoMuseHelperRunner.run("bash.real",
+                                         arguments: ["-lc", command],
                                          timeout: timeout,
-                                         extraEnvironment: env,
-                                         workingDirectory: workspace)
+                                         extraEnvironment: env)
             }.value
             return RunResult(exitCode: result.exitCode, output: result.output,
                              errorOutput: "", duration: result.duration)
