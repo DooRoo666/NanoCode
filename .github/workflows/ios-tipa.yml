@@ -32,7 +32,7 @@ jobs:
     env:
       GO_VERSION: "1.25"
       UPSTREAM_REPO: nano-muse/nanoMuse
-      UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || 'main' }}
     steps:
       - uses: actions/checkout@v4
 
