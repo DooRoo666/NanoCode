@@ -27,6 +27,8 @@ struct NanoMuseCodexView: View {
     // 在线模型
     @State private var models: [String] = []
     @State private var showMermaid = false
+    @StateObject private var nativeLog = NanoMuseNativeRuntime.Log()
+    @State private var nativeRunning = false
     @State private var useFallbackPrompt = NanoMuseCodexSettings.useFallbackPrompt
     @State private var fetchingModels = false
     @State private var modelError: String?
@@ -35,7 +37,7 @@ struct NanoMuseCodexView: View {
 
     private var codexStatusText: String {
         guard let codexStatus else { return "检测中…" }
-        return codexStatus.installed ? "已安装 \(codexStatus.version ?? "")" : "未安装"
+        return codexStatus.summary
     }
 
     var body: some View {
@@ -92,11 +94,21 @@ struct NanoMuseCodexView: View {
             }
 
             NanoMuseRowDivider()
-            NanoMuseActionRow(title: busy ? "安装中…" : "安装 / 更新 Codex", chevron: false) {
-                guard !busy else { return }
+            NanoMuseActionRow(title: busy || nativeRunning ? "安装中…" : "原生安装（推荐）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                installNativeCodex()
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: busy || nativeRunning ? "安装中…" : "Alpine 安装（Linux ELF）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
                 if let spec = NanoMuseTools.catalog.first(where: { $0.id == "codex" }) {
                     install(spec)
                 }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "自检（打诊断信息）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                diagnose()
             }
         }
     }
@@ -250,7 +262,7 @@ struct NanoMuseCodexView: View {
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if !logLines.isEmpty {
+                if !displayLines.isEmpty {
                     Button {
                         logLines.removeAll()
                     } label: {
@@ -267,12 +279,12 @@ struct NanoMuseCodexView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 2) {
-                        if logLines.isEmpty {
+                        if displayLines.isEmpty {
                             Text("还没有输出。点上面任一「安装」后，这里会逐行显示。")
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
                         } else {
-                            ForEach(Array(logLines.enumerated()), id: \.offset) { index, line in
+                            ForEach(Array(displayLines.enumerated()), id: \.offset) { index, line in
                                 Text(line)
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(color(for: line))
@@ -288,8 +300,8 @@ struct NanoMuseCodexView: View {
                 .background(NanoMuseTones.canvas, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .padding(.horizontal, 16)
                 .padding(.bottom, 12)
-                .onChange(of: logLines.count) { _ in
-                    if let last = logLines.indices.last {
+                .onChange(of: displayLines.count) { _ in
+                    if let last = displayLines.indices.last {
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo(last, anchor: .bottom)
                         }
@@ -529,6 +541,48 @@ struct NanoMuseCodexView: View {
 
     private func persist() {
         NanoMuseCodexSettings.save(source: source, apiKey: apiKey, baseURL: baseURL, model: selectedModel)
+    }
+
+    private var displayLines: [String] {
+        nativeRunning || !nativeLog.lines.isEmpty ? nativeLog.lines + logLines : logLines
+    }
+
+    /// 原生安装：从清单取 codex 包（iphoneos-arm64.deb），解到 App 容器
+    private func installNativeCodex() {
+        nativeRunning = true
+        nativeLog.clear()
+        logLines.removeAll()
+        Task {
+            do {
+                let manifest = try await NanoMuseRuntimeManifest.fetch()
+                guard let package = manifest.packages.first(where: { $0.id == "codex" }) else {
+                    await MainActor.run {
+                        nativeLog.add("ERR 清单里没有 codex 包")
+                        nativeRunning = false
+                    }
+                    return
+                }
+                let ok = await NanoMuseNativeRuntime.install(package,
+                                                             proxies: manifest.proxies,
+                                                             log: nativeLog)
+                if !ok { await MainActor.run { nativeLog.add("ERR 原生安装未完成") } }
+            } catch {
+                await MainActor.run { nativeLog.add("ERR 清单拉取失败：\(error.localizedDescription)") }
+            }
+            await MainActor.run { nativeRunning = false }
+            await refreshAll()
+        }
+    }
+
+    /// 自检：把路径/大小/ELF 头/版本/PATH 全打出来
+    private func diagnose() {
+        logLines.removeAll()
+        nativeLog.clear()
+        NanoMuseCodex.runStreaming(NanoMuseCodex.diagnoseScript) { line in
+            append(line)
+        } onFinish: { _ in
+            Task { await refreshAll() }
+        }
     }
 
     private func refreshInherited() {

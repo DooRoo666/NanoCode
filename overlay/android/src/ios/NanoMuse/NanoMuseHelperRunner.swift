@@ -30,9 +30,13 @@ enum NanoMuseHelperRunner {
         ["codex-sign", "ca-filetool", "bash.real"].map { ($0, exists($0)) }
     }
 
-    static func run(_ name: String, arguments: [String] = [], timeout: TimeInterval = 60) -> Result {
+    static func run(_ name: String,
+                    arguments: [String] = [],
+                    timeout: TimeInterval = 60,
+                    extraEnvironment: [String: String] = [:],
+                    workingDirectory: String? = nil) -> Result {
         let started = Date()
-        let executable = path(name)
+        let executable = name.hasPrefix("/") ? name : path(name)
         guard FileManager.default.isExecutableFile(atPath: executable) else {
             return Result(exitCode: -1,
                           output: "未找到可执行文件：\(executable)\n（构建时需要 vendor/helpers，见 make_tipa.sh 第 0 步）",
@@ -52,8 +56,13 @@ enum NanoMuseHelperRunner {
         posix_spawn_file_actions_adddup2(&actions, fd, 1)
         posix_spawn_file_actions_adddup2(&actions, fd, 2)
 
+        if let workingDirectory, !workingDirectory.isEmpty {
+            // iOS 13+ 才有；失败就让目标自己在默认目录跑
+            posix_spawn_file_actions_addchdir_np(&actions, workingDirectory)
+        }
+
         var argv = cStrings([executable] + arguments)
-        var envp = cStrings(environment())
+        var envp = cStrings(environment(extra: extraEnvironment))
         var pid: pid_t = 0
         let rc = posix_spawn(&pid, executable, &actions, nil, &argv, &envp)
 
@@ -103,10 +112,11 @@ enum NanoMuseHelperRunner {
         array.removeAll()
     }
 
-    private static func environment() -> [String] {
+    private static func environment(extra: [String: String] = [:]) -> [String] {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = helpersDirectory + ":/usr/bin:/bin:/usr/sbin:/sbin"
         env["HOME"] = NSHomeDirectory()
+        for (key, value) in extra { env[key] = value }
         return env.map { "\($0.key)=\($0.value)" }
     }
 }

@@ -22,7 +22,7 @@ enum NanoMuseTools {
                 title: "Codex",
                 subtitle: "OpenAI 的编码 Agent，arm64 musl 官方包",
                 sizeHint: "约 100 MB",
-                checkCommand: "codex --version 2>&1",
+                checkCommand: "[ -x /usr/local/bin/codex ] && echo \"已装 $(stat -c %s /usr/local/bin/codex 2>/dev/null) bytes\" || true",
                 installScript: NanoMuseCodex.installScript
             ),
             NanoMuseToolSpec(
