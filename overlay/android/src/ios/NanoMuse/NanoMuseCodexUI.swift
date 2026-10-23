@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// 设置 › Codex：装、配、跑，一页搞定。
-/// 挂在 `NanoMuseSettingsHomeView` 的卡片里（见文件末尾的 extension）。
+/// 设置 › Codex —— 用 nanoMuse 自己的设计系统写，不另造一套：
+/// `NanoMusePage` 画布 + `NanoMuseCard` 卡片 + `NanoMuseRowLabel/ActionRow` 行
+/// + `NanoMuseCaption` 说明 + `NanoMuseTones` 取色，与「模型」「设备」等页一致。
 struct NanoMuseCodexView: View {
 
     @State private var status: NanoMuseCodex.Status?
@@ -13,81 +14,136 @@ struct NanoMuseCodexView: View {
     @State private var baseURL = NanoMuseCodexSettings.current.baseURL
     @State private var model = NanoMuseCodexSettings.current.model
 
+    private var statusText: String {
+        guard let status else { return "检测中…" }
+        return status.installed ? "已安装 \(status.version ?? "")" : "未安装"
+    }
+
+    private var statusTint: Color {
+        guard let status else { return .secondary }
+        return status.installed ? NanoMuseTones.action : .secondary
+    }
+
     var body: some View {
-        Form {
-            Section {
-                HStack {
-                    Text("状态")
-                    Spacer()
-                    if let status {
-                        Text(status.installed ? "已安装 \(status.version ?? "")" : "未安装")
-                            .foregroundStyle(status.installed ? .green : .secondary)
-                    } else {
-                        ProgressView().controlSize(.small)
-                    }
-                }
-                if let status, !status.installed, !status.rawOutput.isEmpty {
-                    Text(status.rawOutput)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-                Button {
-                    install(force: false)
-                } label: {
-                    if busy { ProgressView() } else { Text("安装 / 更新 Codex") }
-                }
-                .disabled(busy)
-            } header: {
-                Text("Codex")
-            } footer: {
-                Text("在手机本地的 Alpine（aarch64）里安装官方 codex 二进制，约 100 MB。安装后 Agent 就能用 codex_exec 工具。")
-            }
+        NanoMusePage(title: "Codex") {
+            installCard
+            NanoMuseCaption(text: "在手机本地的 Alpine（aarch64）里安装官方 codex 二进制，约 100 MB。装好后 Agent 就能用 codex_exec 工具自主改代码。")
 
-            Section {
-                TextField("Base URL（可选，如 https://api.openai.com/v1）", text: $baseURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("API Key", text: $apiKey)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                TextField("模型（可选，如 gpt-5-codex）", text: $model)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                Button("保存") {
-                    NanoMuseCodexSettings.save(apiKey: apiKey, baseURL: baseURL, model: model)
-                    output = "已保存。"
-                }
-            } header: {
-                Text("凭据")
-            } footer: {
-                Text("留空则使用 Codex 自己的默认配置（环境变量或 ~/.codex/config.toml）。")
-            }
+            credentialsCard
+            NanoMuseCaption(text: "留空则沿用 Codex 自己的配置（环境变量或 ~/.codex/config.toml）。")
 
-            Section {
-                TextEditor(text: $prompt)
-                    .frame(minHeight: 80)
-                    .font(.body.monospaced())
-                Button {
-                    run()
-                } label: {
-                    if busy { ProgressView() } else { Text("运行 Codex") }
-                }
-                .disabled(busy || prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            } header: {
-                Text("试跑")
-            }
-
+            runCard
             if !output.isEmpty {
-                Section("输出") {
-                    Text(output)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                }
+                outputCard
             }
         }
-        .navigationTitle("Codex")
-        .navigationBarTitleDisplayMode(.inline)
         .task { await refresh() }
+    }
+
+    // MARK: - 安装
+
+    private var installCard: some View {
+        NanoMuseCard {
+            NanoMuseRowLabel(title: "状态", value: statusText, titleColor: .primary, chevron: false)
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: busy ? "正在安装…" : "安装 / 更新 Codex",
+                              value: nil,
+                              chevron: false) {
+                guard !busy else { return }
+                install(force: false)
+            }
+        }
+    }
+
+    // MARK: - 凭据
+
+    private var credentialsCard: some View {
+        NanoMuseCard {
+            field("Base URL", placeholder: "https://api.openai.com/v1", text: $baseURL, secure: false)
+            NanoMuseRowDivider()
+            field("API Key", placeholder: "sk-…", text: $apiKey, secure: true)
+            NanoMuseRowDivider()
+            field("模型", placeholder: "gpt-5-codex（可留空）", text: $model, secure: false)
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "保存", chevron: false) {
+                NanoMuseCodexSettings.save(apiKey: apiKey, baseURL: baseURL, model: model)
+                output = "已保存。"
+            }
+        }
+    }
+
+    private func field(_ title: String, placeholder: String, text: Binding<String>,
+                       secure: Bool) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.body)
+                .foregroundStyle(.primary)
+                .frame(width: 92, alignment: .leading)
+            Group {
+                if secure {
+                    SecureField(placeholder, text: text)
+                } else {
+                    TextField(placeholder, text: text)
+                }
+            }
+            .font(.body)
+            .multilineTextAlignment(.trailing)
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    // MARK: - 试跑
+
+    private var runCard: some View {
+        NanoMuseCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("任务")
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                TextEditor(text: $prompt)
+                    .font(.body.monospaced())
+                    .frame(minHeight: 88)
+                    .scrollContentBackground(.hidden)
+                    .background(NanoMuseTones.canvas, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(alignment: .topLeading) {
+                        if prompt.isEmpty {
+                            Text("例如：把这个目录整理成一个可运行的 Python CLI")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 8)
+                                .padding(.leading, 6)
+                                .allowsHitTesting(false)
+                        }
+                    }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: busy ? "运行中…" : "运行 Codex", chevron: false) {
+                guard !busy,
+                      !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                run()
+            }
+        }
+    }
+
+    private var outputCard: some View {
+        NanoMuseCard {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("输出")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(output)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+        }
     }
 
     // MARK: - 动作
@@ -104,6 +160,9 @@ struct NanoMuseCodexView: View {
                 NanoMuseCodex.install(force: force)
             }.value
             status = installed
+            if !installed.installed {
+                output = installed.rawOutput
+            }
             busy = false
         }
     }
@@ -130,7 +189,7 @@ struct NanoMuseCodexView: View {
     }
 }
 
-// MARK: - 设置页上的入口卡片
+// MARK: - 设置页上的入口卡片（与「模型」卡片同写法）
 
 extension NanoMuseSettingsHomeView {
     var codexCard: some View {
@@ -139,24 +198,26 @@ extension NanoMuseSettingsHomeView {
                 NanoMuseCodexView()
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(width: 24)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Codex")
                             .font(.headline)
                             .foregroundStyle(.primary)
-                        Text("本地 AI 编码器 · 在终端里自主改代码")
-                            .font(.caption)
+                            .lineLimit(1)
+                        Text("本地 AI 编码器 · 自主改代码")
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                    Spacer(minLength: 8)
+                    Text("打开")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(NanoMuseTones.action)
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
     }
 }
