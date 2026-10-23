@@ -53,8 +53,9 @@ struct NanoMuseCodexView: View {
             modelCard
             NanoMuseCaption(text: "模型列表来自该地址的 /v1/models；拉不到时自动用随包 models.json 兜底，也可以手动输入模型名。")
 
-            // ② 再安装：状态 → 工具 → 原生工具 → 资源 → 更多
+            // ② 再安装：状态 → 回显 → 工具 → 原生工具 → 资源 → 更多
             statusCard
+            logCard
             NanoMuseCaption(text: "推荐在「运行时」里用原生方式安装 codex（原版 iphoneos-arm64 包，跑在 iOS 上）；这里的 Alpine 方式适合纯 Linux 工具。")
 
             toolsCard
@@ -68,8 +69,7 @@ struct NanoMuseCodexView: View {
 
             extraCard
 
-            // ③ 回显与试跑
-            logCard
+            // ③ 试跑
             runCard
             if !output.isEmpty { outputCard }
         }
@@ -88,7 +88,7 @@ struct NanoMuseCodexView: View {
         NanoMuseCard {
             NanoMuseRowLabel(title: "Codex", value: codexStatusText, titleColor: .primary, chevron: false)
 
-            if runningTool == "codex" {
+            if runningTool == "codex" || nativeRunning {
                 NanoMuseRowDivider()
                 progressBlock
             }
@@ -110,13 +110,22 @@ struct NanoMuseCodexView: View {
                 guard !busy, !nativeRunning else { return }
                 diagnose()
             }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "权限对照（原生 vs iSH）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                probePermissions()
+            }
         }
     }
 
     private var progressBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let progress {
-                ProgressView(value: min(max(progress, 0), 1))
+        let shown: Double? = nativeRunning ? nativeLog.progress : progress
+        let text: String = nativeRunning
+            ? (nativeLog.phase.isEmpty ? "准备中…" : nativeLog.phase)
+            : (phaseText.isEmpty ? "准备中…" : phaseText)
+        return VStack(alignment: .leading, spacing: 8) {
+            if let shown {
+                ProgressView(value: min(max(shown, 0), 1))
                     .progressViewStyle(.linear)
                     .tint(NanoMuseTones.action)
             } else {
@@ -124,7 +133,7 @@ struct NanoMuseCodexView: View {
                     .progressViewStyle(.linear)
                     .tint(NanoMuseTones.action)
             }
-            Text(phaseText.isEmpty ? "准备中…" : phaseText)
+            Text(text)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -572,6 +581,22 @@ struct NanoMuseCodexView: View {
             await MainActor.run { nativeRunning = false }
             await refreshAll()
         }
+    }
+
+    /// 权限对照：分别用原生 bash 与 iSH 跑同一组探针
+    private func probePermissions() {
+        logLines.removeAll()
+        nativeLog.clear()
+        append("===== ① 原生进程（Minis posix_spawn）=====")
+        let nativeResult = NanoMuseHelperRunner.run("bash.real",
+                                                    arguments: ["-lc", NanoMuseCodex.nativePermissionScript],
+                                                    timeout: 60)
+        for line in nativeResult.output.split(separator: "\n") { append(String(line)) }
+        append("")
+        append("===== ② iSH 内的 Linux 进程 =====")
+        NanoMuseCodex.runStreaming(NanoMuseCodex.alpinePermissionScript) { line in
+            append(line)
+        } onFinish: { _ in }
     }
 
     /// 自检：把路径/大小/ELF 头/版本/PATH 全打出来

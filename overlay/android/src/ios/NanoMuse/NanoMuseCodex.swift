@@ -326,6 +326,64 @@ public enum NanoMuseCodex {
         """#
     }
 
+    // MARK: - 权限探针（原生 vs iSH 对照）
+
+    /// 由 Minis 本体 posix_spawn 出来的 bash：能看到宿主 App 的沙盒边界。
+    public static var nativePermissionScript: String {
+        #"""
+        echo "=== 原生进程（Minis 直接 posix_spawn）==="
+        echo "uid:gid      = $(id -u 2>/dev/null):$(id -g 2>/dev/null)"
+        echo "uname        = $(uname -a 2>/dev/null)"
+        echo "HOME         = $HOME"
+        probe() {
+          if [ -e "$1" ]; then
+            if [ -r "$1" ]; then echo "  可读    $1"; else echo "  存在但被拒 $1"; fi
+          else
+            echo "  不存在  $1"
+          fi
+        }
+        probe /private/var/mobile
+        probe /private/var/mobile/Library/Preferences
+        probe /System/Library/CoreServices/SystemVersion.plist
+        probe /dev/disk0
+        probe /dev/kmem
+        echo "--- 列 /private/var/mobile/Containers ---"
+        if ls /private/var/mobile/Containers >/dev/null 2>&1; then echo "  可以列（宿主权限生效）"; else echo "  被拒（errno=$?）"; fi
+        echo "--- 写 /private/var/mobile/Library/Preferences ---"
+        if (echo probe > /private/var/mobile/Library/Preferences/nanocodex-probe 2>/dev/null); then
+          echo "  可写（宿主权限生效）"; rm -f /private/var/mobile/Library/Preferences/nanocodex-probe
+        else
+          echo "  被拒（errno=$?）"
+        fi
+        echo "=== 结束 ==="
+        """#
+    }
+
+    /// iSH 里的 Linux 进程：fake fs + 自造 /proc，宿主权限不进来。
+    public static var alpinePermissionScript: String {
+        #"""
+        echo "=== iSH 内的 Linux 进程 ==="
+        echo "uname        = $(uname -a 2>/dev/null)"
+        echo "/proc/version= $(cat /proc/version 2>/dev/null)"
+        echo "uid:gid      = $(id -u 2>/dev/null):$(id -g 2>/dev/null)"
+        probe() {
+          if [ -e "$1" ]; then
+            if [ -r "$1" ]; then echo "  可读    $1"; else echo "  存在但被拒 $1"; fi
+          else
+            echo "  不存在  $1"
+          fi
+        }
+        probe /private/var/mobile
+        probe /private/var/mobile/Library/Preferences
+        probe /dev/disk0
+        probe /dev/kmem
+        probe /etc/alpine-release
+        echo "--- 宿主设备节点 ---"
+        ls /dev | head -8 | sed 's/^/  \/dev\//'
+        echo "=== 结束：以上是 fake fs 的视图，宿主 entitlements 不作用于本进程 ==="
+        """#
+    }
+
     @discardableResult
     public static func install(force: Bool = false) async -> Status {
         await runStreamingAwait(installScript, timeout: 1800)

@@ -16,6 +16,13 @@ enum NanoMuseNativeRuntime {
     @MainActor
     final class Log: ObservableObject {
         @Published private(set) var lines: [String] = []
+        /// 0…1；nil = 不确定进度
+        @Published private(set) var progress: Double?
+        /// 当前阶段文案（STEP / 下载中 12.3 / 95.0 MB）
+        @Published private(set) var phase: String = ""
+
+        func setProgress(_ value: Double?) { progress = value }
+        func setPhase(_ text: String) { phase = text }
 
         func add(_ line: String) {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -24,7 +31,11 @@ enum NanoMuseNativeRuntime {
             if lines.count > 500 { lines.removeFirst(lines.count - 500) }
         }
 
-        func clear() { lines.removeAll() }
+        func clear() {
+            lines.removeAll()
+            progress = nil
+            phase = ""
+        }
     }
 
     struct Installed: Sendable {
@@ -74,6 +85,7 @@ enum NanoMuseNativeRuntime {
                         log: Log) async -> Bool {
 
         await log.add("STEP 1/5 准备")
+        await log.setPhase("准备")
         await log.add("  目标：\(directory(for: package.id).path)")
         await log.add("  大小：\(package.sizeText)")
 
@@ -93,6 +105,7 @@ enum NanoMuseNativeRuntime {
 
         // ---- 下载 ----
         await log.add("STEP 2/5 下载")
+        await log.setPhase("下载中…")
         guard let archive = await download(package.archiveURL, proxies: proxies, log: log) else {
             await log.add("ERR 下载失败（直连与代理都不可用）")
             return false
@@ -101,6 +114,7 @@ enum NanoMuseNativeRuntime {
 
         // ---- 校验 ----
         await log.add("STEP 3/5 校验 SHA256")
+        await log.setPhase("校验 SHA256")
         let digest = (try? sha256(of: archive)) ?? ""
         await log.add("  期望：\(package.sha256)")
         await log.add("  实际：\(digest)")
@@ -112,6 +126,7 @@ enum NanoMuseNativeRuntime {
 
         // ---- 解包 ----
         await log.add("STEP 4/5 解包")
+        await log.setPhase("解包中…")
         try? FileManager.default.removeItem(at: destination)
         try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 
@@ -142,6 +157,7 @@ enum NanoMuseNativeRuntime {
 
         // ---- 权限 / 签名 / 探测 ----
         await log.add("STEP 5/5 权限与探测")
+        await log.setPhase("签名与探测")
         let executables = makeExecutable(destination)
         await log.add("  可执行文件：\(executables) 个")
 
@@ -161,6 +177,8 @@ enum NanoMuseNativeRuntime {
             await log.add("  （清单未给探测命令）")
         }
         await log.add("STEP done")
+        await log.setPhase("完成")
+        await log.setProgress(1)
         return true
     }
 
@@ -172,33 +190,108 @@ enum NanoMuseNativeRuntime {
         for prefix in ([""] + proxies) {
             guard let url = URL(string: prefix + urlString) else { continue }
             await log.add("  尝试：\(prefix.isEmpty ? "直连" : prefix)")
-            do {
-                let (file, response) = try await URLSession.shared.download(from: url)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                guard status == 200 else {
-                    await log.add("    HTTP \(status)")
-                    continue
-                }
-                let suffix: String
-                if urlString.hasSuffix(".gz") { suffix = "tar.gz" }
-                else if urlString.hasSuffix(".deb") { suffix = "deb" }
-                else if urlString.hasSuffix(".xz") { suffix = "tar.xz" }
-                else if urlString.hasSuffix(".zst") { suffix = "tar.zst" }
-                else { suffix = "bin" }
+            await log.setPhase("连接中…")
 
-                let target = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("rt-\(UUID().uuidString.prefix(6)).\(suffix)")
-                try? FileManager.default.removeItem(at: target)
-                try FileManager.default.moveItem(at: file, to: target)
-                let attributes = try? FileManager.default.attributesOfItem(atPath: target.path)
+            let suffix: String
+            if urlString.hasSuffix(".gz") { suffix = "tar.gz" }
+            else if urlString.hasSuffix(".deb") { suffix = "deb" }
+            else if urlString.hasSuffix(".xz") { suffix = "tar.xz" }
+            else if urlString.hasSuffix(".zst") { suffix = "tar.zst" }
+            else { suffix = "bin" }
+
+            let target = FileManager.default.temporaryDirectory
+                .appendingPathComponent("rt-\(UUID().uuidString.prefix(6)).\(suffix)")
+
+            do {
+                let downloader = ProgressDownloader(log: log, destination: target)
+                let file = try await downloader.start(url)
+                let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
                 let size = (attributes?[.size] as? Int) ?? 0
+                await log.setProgress(1)
+                await log.setPhase("下载完成 \(size / 1048576) MB")
                 await log.add("    完成：\(size / 1048576) MB")
-                return target
+                return file
             } catch {
                 await log.add("    失败：\(error.localizedDescription)")
+                await log.setProgress(nil)
             }
         }
         return nil
+    }
+
+    /// URLSession 下载代理：每 0.4 秒写一次进度，每 4 MB 落一行回显。
+    private final class ProgressDownloader: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+        private let log: Log
+        private let destination: URL
+        private var continuation: CheckedContinuation<URL, Error>?
+        private var session: URLSession?
+        private var lastEmit = Date.distantPast
+        private var lastMark: Int64 = 0
+
+        init(log: Log, destination: URL) {
+            self.log = log
+            self.destination = destination
+        }
+
+        func start(_ url: URL) async throws -> URL {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.timeoutIntervalForRequest = 30
+                configuration.timeoutIntervalForResource = 1800
+                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+                self.session = session
+                session.downloadTask(with: url).resume()
+            }
+        }
+
+        func urlSession(_ session: URLSession,
+                        downloadTask: URLSessionDownloadTask,
+                        didWriteData bytesWritten: Int64,
+                        totalBytesWritten: Int64,
+                        totalBytesExpectedToWrite: Int64) {
+            let total = totalBytesExpectedToWrite
+            let progress = total > 0 ? Double(totalBytesWritten) / Double(total) : nil
+            let mb = Double(totalBytesWritten) / 1048576
+            let totalMB = total > 0 ? Double(total) / 1048576 : 0
+
+            let now = Date()
+            if now.timeIntervalSince(lastEmit) > 0.4 {
+                lastEmit = now
+                Task { @MainActor in
+                    log.setProgress(progress)
+                    log.setPhase(String(format: "下载中 %.1f / %.1f MB", mb, totalMB))
+                }
+            }
+            if totalBytesWritten - lastMark >= 4 * 1024 * 1024 {
+                lastMark = totalBytesWritten
+                Task { @MainActor in
+                    log.add(String(format: "BYTES %lld %lld", totalBytesWritten, total))
+                }
+            }
+        }
+
+        func urlSession(_ session: URLSession,
+                        downloadTask: URLSessionDownloadTask,
+                        didFinishDownloadingTo location: URL) {
+            do {
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: location, to: destination)
+                continuation?.resume(returning: destination)
+                continuation = nil
+            } catch {
+                continuation?.resume(throwing: error)
+                continuation = nil
+            }
+            session.finishTasksAndInvalidate()
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            guard let error, let continuation else { return }
+            continuation.resume(throwing: error)
+            self.continuation = nil
+            session.finishTasksAndInvalidate()
+        }
     }
 
     // MARK: - SHA256（流式，避免 200 MB 进内存）
