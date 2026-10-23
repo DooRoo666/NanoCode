@@ -95,7 +95,8 @@ jobs:
           python3 Tools/apply_overlay.py \
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
-          ls -l upstream/android/src/ios/NanoMuse/ | tail -3
+          python3 Tools/patch_upstream.py --root upstream/android/src/ios
+          ls -l upstream/android/src/ios/NanoMuse/ | tail -4
 
       - name: Build (unsigned)
         working-directory: upstream/android/src/ios
