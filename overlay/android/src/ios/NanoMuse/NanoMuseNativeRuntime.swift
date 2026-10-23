@@ -255,8 +255,8 @@ enum NanoMuseNativeRuntime {
                     .appendingPathComponent("payload-\(UUID().uuidString.prefix(6)).tar.\(suffix)")
                 try? payload.write(to: out)
                 if suffix == "gz" { return out }
-                await log.add("  deb 内层为 .\(suffix)，原生解包不支持（可改用 Alpine 路线）")
-                return nil
+                await log.add("  deb 内层为 .\(suffix)：交给 Alpine 解压（zstd/xz 由 apk 提供）")
+                return out
             }
             let skip = UInt64(size % 2 == 0 ? size : size + 1)
             try? handle.seek(toOffset: handle.offsetInFile + skip)
@@ -265,8 +265,17 @@ enum NanoMuseNativeRuntime {
         return nil
     }
 
-    /// 用随包的 ca-filetool（多调用工具，含 tar）解包，避免在 Swift 里实现 tar。
+    /// 解包分流：
+    ///   · `.tar.gz` → 随包 ca-filetool（原生 Mach-O，含 tar）
+    ///   · `.tar.zst` / `.tar.xz` → 交给 Alpine（apk 提供 zstd/xz），
+    ///     用 `mount -t real` 把 App 容器目录挂进 Alpine，产物直接落回容器内，
+    ///     这样解出来的 Mach-O 才能被 posix_spawn 执行。
     private static func extract(payload: URL, into destination: URL, log: Log) async -> Bool {
+        let name = payload.lastPathComponent.lowercased()
+        if name.hasSuffix(".zst") || name.hasSuffix(".xz") {
+            return await extractViaAlpine(payload: payload, into: destination, log: log)
+        }
+
         guard NanoMuseHelperRunner.exists("ca-filetool") else {
             await log.add("  缺少 ca-filetool，无法解包")
             return false
@@ -284,6 +293,71 @@ enum NanoMuseNativeRuntime {
             await log.add("  \(line)")
         }
         return result.exitCode == 0
+    }
+
+    /// 用 iSH 的 `mount -t real` 把宿主目录暴露给 Alpine，在 Alpine 里解 zstd/xz。
+    private static func extractViaAlpine(payload: URL, into destination: URL, log: Log) async -> Bool {
+        let hostDirectory = payload.deletingLastPathComponent().path
+        let payloadName = payload.lastPathComponent
+        let outName = "out-\(UUID().uuidString.prefix(6))"
+
+        let script = #"""
+        set -u
+        mkdir -p /mnt/nanocodex
+        if ! mount -t real __HOST__ /mnt/nanocodex 2>/dev/null; then
+          echo "MOUNT_FAIL"
+          exit 9
+        fi
+        echo "MOUNT_OK 已挂载宿主目录"
+        cd /mnt/nanocodex || exit 10
+        rm -rf __OUT__ && mkdir -p __OUT__
+        case "__NAME__" in
+          *.zst)
+            command -v zstd >/dev/null 2>&1 || apk add --no-cache zstd >/dev/null 2>&1
+            command -v zstd >/dev/null 2>&1 || { echo "NO_ZSTD"; exit 11; }
+            zstd -d -q -f "__NAME__" -o "__NAME__.tar" || exit 12
+            tar xf "__NAME__.tar" -C __OUT__ || exit 13
+            rm -f "__NAME__.tar"
+            ;;
+          *.xz)
+            command -v xz >/dev/null 2>&1 || apk add --no-cache xz >/dev/null 2>&1
+            tar xJf "__NAME__" -C __OUT__ || exit 13
+            ;;
+          *) echo "UNSUPPORTED"; exit 14 ;;
+        esac
+        echo "EXTRACT_OK"
+        find __OUT__ -maxdepth 3 -type f | head -8
+        """#
+            .replacingOccurrences(of: "__HOST__", with: "'" + hostDirectory + "'")
+            .replacingOccurrences(of: "__NAME__", with: payloadName)
+            .replacingOccurrences(of: "__OUT__", with: outName)
+
+        let (code, output) = await NanoMuseCodex.runCommand(script, timeout: 1200)
+        for line in output.split(separator: "\n") {
+            await log.add("  " + String(line))
+        }
+        guard code == 0, output.contains("EXTRACT_OK") else {
+            if output.contains("MOUNT_FAIL") {
+                await log.add("  提示：这条 iSH 构建不支持 mount -t real。")
+                await log.add("        可用「运行时 › Alpine」安装该包，或把 deb 转成 .tar.gz 后再来。")
+            } else if output.contains("NO_ZSTD") {
+                await log.add("  Alpine 里 apk add zstd 失败（可能没有网络/源）。")
+            }
+            return false
+        }
+
+        // 把 Alpine 解出来的内容搬进最终目录
+        let produced = payload.deletingLastPathComponent().appendingPathComponent(outName)
+        let children = (try? FileManager.default.contentsOfDirectory(atPath: produced.path)) ?? []
+        await log.add("  搬运 \(children.count) 项到最终目录")
+        for child in children {
+            let from = produced.appendingPathComponent(child)
+            let to = destination.appendingPathComponent(child)
+            try? FileManager.default.removeItem(at: to)
+            try? FileManager.default.moveItem(at: from, to: to)
+        }
+        try? FileManager.default.removeItem(at: produced)
+        return true
     }
 
     // MARK: - 权限 / 签名 / 探测
