@@ -42,18 +42,21 @@ enum NanoMuseCodexTool {
         guard status.installed else {
             return Outcome(
                 exitCode: 127,
-                text: "Codex 尚未安装。请到 设置 → Codex 点「安装 Codex」（约 100 MB，装在本地 Alpine 里），或先运行 shell_execute 安装。"
+                text: "Codex 尚未安装。请到 设置 → Codex 点「安装 / 更新 Codex」（约 100 MB），或先用 shell_execute 安装。"
             )
         }
 
-        let settings = NanoMuseCodexSettings.current
+        // 模型来源二选一：跟随 nanoMuse 的 provider，或用户自填的第三方
+        let credential = await MainActor.run { NanoMuseCodexSettings.resolved() }
+        let model = NanoMuseCodexSettings.current.model
+
         let result = await Task.detached(priority: .userInitiated) {
             NanoMuseCodex.execute(
                 prompt: prompt,
                 workspace: workspace,
-                apiKey: settings.apiKey,
-                baseURL: settings.baseURL,
-                model: settings.model,
+                apiKey: credential.apiKey,
+                baseURL: credential.baseURL,
+                model: model,
                 timeout: timeout
             )
         }.value
@@ -63,17 +66,19 @@ enum NanoMuseCodexTool {
     }
 }
 
-// MARK: - 用户设置（Key / 地址 / 模型）持久化
+// MARK: - 用户设置（来源 / Key / 地址 / 模型）持久化
 
 enum NanoMuseCodexSettings {
 
     struct Values: Sendable {
+        let source: NanoMuseCodexSource
         let apiKey: String
         let baseURL: String
         let model: String
     }
 
     private enum Key {
+        static let source = "nanocodex.source"
         static let apiKey = "nanocodex.apiKey"
         static let baseURL = "nanocodex.baseURL"
         static let model = "nanocodex.model"
@@ -81,25 +86,36 @@ enum NanoMuseCodexSettings {
 
     static var current: Values {
         let defaults = UserDefaults.standard
+        let raw = defaults.string(forKey: Key.source) ?? NanoMuseCodexSource.followNano.rawValue
         return Values(
+            source: NanoMuseCodexSource(rawValue: raw) ?? .followNano,
             apiKey: defaults.string(forKey: Key.apiKey) ?? "",
             baseURL: defaults.string(forKey: Key.baseURL) ?? "",
             model: defaults.string(forKey: Key.model) ?? ""
         )
     }
 
-    static func save(apiKey: String, baseURL: String, model: String) {
+    static func save(source: NanoMuseCodexSource, apiKey: String, baseURL: String, model: String) {
         let defaults = UserDefaults.standard
+        defaults.set(source.rawValue, forKey: Key.source)
         defaults.set(apiKey, forKey: Key.apiKey)
         defaults.set(baseURL, forKey: Key.baseURL)
         defaults.set(model, forKey: Key.model)
     }
 
-    /// 复用已经配置好的 OpenAI 兼容 provider：省得用户在 Codex 里再填一遍
-    static var inheritedFromProvider: Values? {
-        let defaults = UserDefaults.standard
-        guard let base = defaults.string(forKey: Key.baseURL), !base.isEmpty else { return nil }
-        return Values(apiKey: defaults.string(forKey: Key.apiKey) ?? "", baseURL: base,
-                      model: defaults.string(forKey: Key.model) ?? "")
+    /// 真正拿去请求的地址与密钥：
+    /// 跟随模式优先用 nanoMuse 已配好的 provider；读不到时退回用户手填值。
+    @MainActor
+    static func resolved() -> (baseURL: String, apiKey: String, label: String) {
+        let values = current
+        switch values.source {
+        case .followNano:
+            if let inherited = NanoMuseCodexModels.inherited() {
+                return (inherited.baseURL, inherited.apiKey, inherited.label)
+            }
+            return (values.baseURL, values.apiKey, "手填")
+        case .custom:
+            return (values.baseURL, values.apiKey, "自定义")
+        }
     }
 }

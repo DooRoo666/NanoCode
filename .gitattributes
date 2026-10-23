@@ -8,3 +8,5 @@
 *.plist text eol=lf
 *.md text eol=lf
 *.tipa binary
+
+vendor/helpers/** binary

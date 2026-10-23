@@ -26,7 +26,45 @@ mkdir -p "$OUT/Payload"
 cp -R "$APP" "$OUT/Payload/$APP_NAME.app"
 TARGET="$OUT/Payload/$APP_NAME.app"
 
-echo "== 1/3 nested Mach-O: ad-hoc =="
+echo "== 0/4 Helpers（MT-Agent 工具链：codex-sign / ca-filetool / bash.real + 链接） =="
+HELPERS_SRC="$ROOT/vendor/helpers"
+if [ -d "$HELPERS_SRC" ]; then
+  mkdir -p "$TARGET/Helpers"
+  # 真实文件
+  while IFS= read -r -d '' f; do
+    rel="${f#$HELPERS_SRC/}"
+    [ "$rel" = "_symlinks.txt" ] && continue
+    mkdir -p "$TARGET/Helpers/$(dirname "$rel")"
+    cp "$f" "$TARGET/Helpers/$rel"
+    chmod 0755 "$TARGET/Helpers/$rel"
+  done < <(find "$HELPERS_SRC" -type f -print0)
+  # 符号链接（zip 里以文本记录，这里还原成真链接）
+  if [ -f "$HELPERS_SRC/_symlinks.txt" ]; then
+    while IFS=$'\t' read -r link target; do
+      [ -z "${link:-}" ] && continue
+      mkdir -p "$TARGET/Helpers/$(dirname "$link")"
+      ln -sfn "$target" "$TARGET/Helpers/$link"
+    done < "$HELPERS_SRC/_symlinks.txt"
+  fi
+  echo "   helpers: $(find "$TARGET/Helpers" -type f | wc -l | tr -d ' ') files, $(find "$TARGET/Helpers" -type l | wc -l | tr -d ' ') links"
+else
+  echo "   (跳过：没有 vendor/helpers)"
+fi
+
+echo "== 0b/4 随包资源（Mermaid / cacert / models.json / 兜底提示词 / Notices） =="
+BUNDLE_SRC="$ROOT/vendor/bundle"
+if [ -d "$BUNDLE_SRC" ]; then
+  while IFS= read -r -d '' f; do
+    rel="${f#$BUNDLE_SRC/}"
+    mkdir -p "$TARGET/$(dirname "$rel")"
+    cp "$f" "$TARGET/$rel"
+  done < <(find "$BUNDLE_SRC" -type f -print0)
+  echo "   bundled resources: $(find "$BUNDLE_SRC" -type f | wc -l | tr -d ' ')"
+else
+  echo "   (跳过：没有 vendor/bundle)"
+fi
+
+echo "== 1/4 nested Mach-O: ad-hoc =="
 count=0
 while IFS= read -r -d '' f; do
   if is_macho "$f"; then
@@ -39,7 +77,7 @@ while IFS= read -r -d '' f; do
 done < <(find "$TARGET" -type f -print0)
 echo "   signed $count nested binaries"
 
-echo "== 2/3 extensions =="
+echo "== 2/4 extensions =="
 shopt -s nullglob
 for appex in "$TARGET"/PlugIns/*.appex "$TARGET"/AppExtensions/*.appex; do
   exe="$appex/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$appex/Info.plist")"
@@ -50,10 +88,10 @@ for appex in "$TARGET"/PlugIns/*.appex "$TARGET"/AppExtensions/*.appex; do
 done
 shopt -u nullglob
 
-echo "== 3/3 main executable =="
+echo "== 3/4 main executable =="
 "$LDID" -S"$MAIN_ENT" "$TARGET/$APP_NAME"
 
-echo "== package =="
+echo "== 4/4 package =="
 cd "$OUT"
 rm -f NanoCode.tipa
 zip -qry -y NanoCode.tipa Payload

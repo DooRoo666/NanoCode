@@ -104,20 +104,74 @@ def _insert(root: pathlib.Path, rel: str, anchor: str, insert: str, label: str,
     return 0
 
 
+SUBAGENT_DEFS_INSERT = (
+    "            NanoMuseSubagentTool.dispatchDefinition,\n"
+    "            NanoMuseSubagentTool.resultDefinition,\n"
+)
+
+SUBAGENT_DISPATCH_INSERT = '''        case "subagent_dispatch":
+            let subPrompt = (toolArgs["prompt"] as? String) ?? ""
+            let subWorkspace = (toolArgs["workspace"] as? String) ?? "/root/work"
+            let subTimeout = TimeInterval((toolArgs["timeout"] as? Int) ?? 1800)
+            if subPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                toolOutput = "Error: missing required 'prompt' parameter."
+                toolSuccess = false
+            } else {
+                toolOutput = await NanoMuseSubagentTool.dispatch(
+                    prompt: subPrompt,
+                    workspace: subWorkspace,
+                    timeout: subTimeout
+                )
+                toolSuccess = true
+            }
+
+        case "subagent_result":
+            toolOutput = await NanoMuseSubagentTool.collect()
+            toolSuccess = true
+
+'''
+
+
+def _insert_once(root: pathlib.Path, rel: str, anchor: str, marker: str, insert: str,
+                 label: str, check_only: bool) -> int:
+    """在 anchor 之后插入 insert；marker 已存在则视为已接线。"""
+    path = root / rel
+    if not path.exists():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 2
+    text = path.read_text(encoding="utf-8")
+    if marker in text:
+        print(f"  {label}: already wired")
+        return 0
+    count = text.count(anchor)
+    if count != 1:
+        print(f"error: {label} anchor found {count} times (expected 1)", file=sys.stderr)
+        return 3
+    print(f"  {label}: wired")
+    if check_only:
+        return 0
+    path.write_text(text.replace(anchor, anchor + insert, 1), encoding="utf-8")
+    return 0
+
+
 def patch_codex(root: pathlib.Path, check_only: bool) -> int:
-    rc = _insert(root, TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR,
-                 TOOL_DEFS_ANCHOR + TOOL_DEFS_INSERT,
-                 "tool definition (codex_exec)", "NanoMuseCodexTool.definition", check_only)
-    if rc:
-        return rc
-    rc = _insert(root, TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR,
-                 TOOL_DISPATCH_INSERT + TOOL_DISPATCH_ANCHOR,
-                 "tool dispatch (codex_exec)", 'case "codex_exec":', check_only)
-    if rc:
-        return rc
-    rc = _insert(root, SETTINGS_FILE, SETTINGS_ANCHOR, SETTINGS_INSERT,
-                 "settings card (Codex)", "codexCard", check_only)
-    return rc
+    steps = [
+        (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseCodexTool.definition",
+         TOOL_DEFS_INSERT, "tool definition (codex_exec)"),
+        (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseSubagentTool.dispatchDefinition",
+         SUBAGENT_DEFS_INSERT, "tool definitions (subagent)"),
+        (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "codex_exec":',
+         TOOL_DISPATCH_INSERT, "tool dispatch (codex_exec)"),
+        (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "subagent_dispatch":',
+         SUBAGENT_DISPATCH_INSERT, "tool dispatch (subagent)"),
+        (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
+         SETTINGS_INSERT, "settings card (Codex)"),
+    ]
+    for rel, anchor, marker, insert, label in steps:
+        rc = _insert_once(root, rel, anchor, marker, insert, label, check_only)
+        if rc:
+            return rc
+    return 0
 
 
 def patch_providers_json(root: pathlib.Path, check_only: bool) -> int:

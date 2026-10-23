@@ -96,6 +96,7 @@ jobs:
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
           python3 Tools/patch_upstream.py --root upstream/android/src/ios
+          python3 Tools/patch_info_plist.py --plist upstream/android/src/ios/Info.plist
           ls -l upstream/android/src/ios/NanoMuse/ | tail -4
 
       - name: Build (unsigned)
