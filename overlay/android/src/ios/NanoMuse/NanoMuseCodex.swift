@@ -128,6 +128,65 @@ public enum NanoMuseCodex {
         return RunResult(exitCode: code, output: out, errorOutput: err, duration: duration)
     }
 
+    // MARK: - 带进度的安装（给 UI 用）
+
+    /// 用 iSH 的行回调把下载/解包/安装各阶段喂给界面：
+    /// `PHASE xxx` 表示阶段，`BYTES <已下载> <总大小>` 用来算百分比。
+    /// 回调都在主队列上，UI 可以直接写 @State。
+    @discardableResult
+    public static func installStreaming(
+        force: Bool = false,
+        timeout: TimeInterval = 1800,
+        onLine: @escaping (String) -> Void,
+        onFinish: @escaping (Bool) -> Void
+    ) -> Bool {
+        if !force, status().installed {
+            onLine("PHASE done")
+            onFinish(true)
+            return true
+        }
+
+        let pid = ISHShellExecutor.executeCommand(
+            streamingScript,
+            timeout: timeout,
+            lineCallback: { line, _ in onLine(line) },
+            completion: { result in onFinish((result?.exitCode ?? -1) == 0) }
+        )
+        return pid > 0
+    }
+
+    private static var streamingScript: String {
+        """
+        set -e
+        ARCH=$(uname -m)
+        [ "$ARCH" = "aarch64" ] || { echo "ERR unsupported-arch $ARCH"; exit 3; }
+        echo "PHASE prepare"
+        apk add --no-cache curl tar >/dev/null 2>&1 || true
+        URL=\(downloadURL)
+        TOTAL=$(curl -sIL "$URL" 2>/dev/null | tr -d \"\\r\" | awk 'tolower($1)=="content-length:"{v=$2} END{print v+0}')
+        [ -n "$TOTAL" ] || TOTAL=0
+        echo "PHASE download total=$TOTAL"
+        rm -f /tmp/codex.tgz
+        curl -fL --retry 2 -o /tmp/codex.tgz "$URL" &
+        CPID=$!
+        while kill -0 $CPID 2>/dev/null; do
+          SZ=$(stat -c %s /tmp/codex.tgz 2>/dev/null || echo 0)
+          echo "BYTES $SZ $TOTAL"
+          sleep 1
+        done
+        wait $CPID || { echo "ERR download-failed"; exit 4; }
+        echo "PHASE extract"
+        tar xzf /tmp/codex.tgz -C /tmp
+        BIN=$(find /tmp -maxdepth 3 -type f -name codex ! -path '*/node_modules/*' | head -1)
+        [ -n "$BIN" ] || { echo "ERR binary-not-found"; exit 5; }
+        install -m 0755 "$BIN" /usr/local/bin/codex
+        rm -f /tmp/codex.tgz
+        echo "PHASE verify"
+        /usr/local/bin/codex --version
+        echo "PHASE done"
+        """
+    }
+
     // MARK: - 卸载
 
     public static func uninstall() {
