@@ -24,6 +24,14 @@ public enum NanoMuseCodex {
         public let rawOutput: String
 
         public var installed: Bool { alpinePath != nil || nativePath != nil }
+
+        /// codex_exec 实际会用的那条路（原生优先于"装了但跑不起来"的 Alpine）
+        public var activeRoute: String? {
+            if alpinePath != nil, alpineRuns { return "Alpine" }
+            if nativePath != nil { return "原生" }
+            if alpinePath != nil { return "Alpine（但跑不起来）" }
+            return nil
+        }
         public var version: String? { alpineVersion }
 
         /// 「Alpine 已装（0.163.0）· 原生 未装」
@@ -411,8 +419,10 @@ public enum NanoMuseCodex {
 
         let current = await status()
 
-        // 原生二进制：直接 posix_spawn，不需要 Alpine
-        if current.alpinePath == nil, let native = nativeBinary() {
+        // 原生二进制：只要 Alpine 那条「装了但跑不起来」，就直接用原生。
+        // 否则会出现：Alpine 的 musl 程序一跑就崩，codex_exec 却一直往那条路走。
+        let alpineUsable = (current.alpinePath != nil) && current.alpineRuns
+        if !alpineUsable, let native = nativeBinary() {
             var args = ["exec", "--skip-git-repo-check"]
             args.append(contentsOf: extraArgs)
             args.append(effectivePrompt)
@@ -433,6 +443,18 @@ public enum NanoMuseCodex {
             }.value
             return RunResult(exitCode: result.exitCode, output: result.output,
                              errorOutput: "", duration: result.duration)
+        }
+
+        // 到这里只剩 Alpine 路线；若它也不在，给出可操作的错误
+        guard current.alpinePath != nil else {
+            return RunResult(exitCode: 127,
+                             output: """
+                             没有可用的 codex：
+                               · Alpine 未安装（点「Alpine 安装」）
+                               · 原生未安装（点「原生安装（推荐）」）
+                             装完再点「自检」确认真能用起来。
+                             """,
+                             errorOutput: "", duration: 0)
         }
 
         // Alpine 路线
