@@ -108,7 +108,8 @@ public enum NanoMuseCodex {
         apiKey: String? = nil,
         baseURL: String? = nil,
         model: String? = nil,
-        extraArgs: [String] = []
+        extraArgs: [String] = [],
+        timeout: TimeInterval = 900
     ) -> RunResult {
         var env: [String] = []
         if let apiKey, !apiKey.isEmpty { env.append("export OPENAI_API_KEY=\(quote(apiKey))") }
@@ -123,7 +124,7 @@ public enum NanoMuseCodex {
         cd \(quote(workspace)) && codex \(args.joined(separator: " ")) \(quote(prompt)) 2>&1
         """
 
-        let (code, out, err, duration) = run(command)
+        let (code, out, err, duration) = run(command, timeout: timeout)
         return RunResult(exitCode: code, output: out, errorOutput: err, duration: duration)
     }
 

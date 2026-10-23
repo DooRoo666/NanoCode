@@ -52,6 +52,73 @@ CUSTOM_NOTE_ZH = "填入 API Key 与接口地址（通常以 /v1 结尾）。保
 
 PROVIDERS_JSON = "NanoMuse/Resources/providers.json"
 
+# ---- Codex 接入点（三处）----------------------------------------------------
+TOOL_DEFS_FILE = "Agent/Chat/AIChatViewModel+ToolDefinitions.swift"
+TOOL_DEFS_ANCHOR = "        var tools: [AgentToolDefinition] = [\n"
+TOOL_DEFS_INSERT = "            NanoMuseCodexTool.definition,\n"
+
+TOOL_DISPATCH_FILE = "Agent/Chat/AIChatViewModel+ConcurrentTools.swift"
+TOOL_DISPATCH_ANCHOR = '        case "shell_execute":\n'
+TOOL_DISPATCH_INSERT = '''        case "codex_exec":
+            let codexPrompt = (toolArgs["prompt"] as? String) ?? ""
+            let codexWorkspace = (toolArgs["workspace"] as? String) ?? "/root/work"
+            let codexTimeout = TimeInterval((toolArgs["timeout"] as? Int) ?? 900)
+            if codexPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                toolOutput = "Error: missing required 'prompt' parameter."
+                toolSuccess = false
+            } else {
+                let outcome = await NanoMuseCodexTool.execute(
+                    prompt: codexPrompt,
+                    workspace: codexWorkspace,
+                    timeout: codexTimeout
+                )
+                toolOutput = outcome.text
+                toolSuccess = outcome.exitCode == 0
+            }
+
+'''
+
+SETTINGS_FILE = "NanoMuse/NanoMuseSettings.swift"
+SETTINGS_ANCHOR = "            agentCard\n            phoneCard\n"
+SETTINGS_INSERT = "            agentCard\n            codexCard\n            phoneCard\n"
+
+
+def _insert(root: pathlib.Path, rel: str, anchor: str, insert: str, label: str,
+            already: str, check_only: bool) -> int:
+    """在 anchor 之后插入一段代码；已插入则跳过，找不到锚点就报错。"""
+    path = root / rel
+    if not path.exists():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 2
+    text = path.read_text(encoding="utf-8")
+    if already in text:
+        print(f"  {label}: already wired")
+        return 0
+    if text.count(anchor) != 1:
+        print(f"error: {label} anchor found {text.count(anchor)} times (expected 1)", file=sys.stderr)
+        return 3
+    print(f"  {label}: wired")
+    if check_only:
+        return 0
+    path.write_text(text.replace(anchor, insert, 1), encoding="utf-8")
+    return 0
+
+
+def patch_codex(root: pathlib.Path, check_only: bool) -> int:
+    rc = _insert(root, TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR,
+                 TOOL_DEFS_ANCHOR + TOOL_DEFS_INSERT,
+                 "tool definition (codex_exec)", "NanoMuseCodexTool.definition", check_only)
+    if rc:
+        return rc
+    rc = _insert(root, TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR,
+                 TOOL_DISPATCH_INSERT + TOOL_DISPATCH_ANCHOR,
+                 "tool dispatch (codex_exec)", 'case "codex_exec":', check_only)
+    if rc:
+        return rc
+    rc = _insert(root, SETTINGS_FILE, SETTINGS_ANCHOR, SETTINGS_INSERT,
+                 "settings card (Codex)", "codexCard", check_only)
+    return rc
+
 
 def patch_providers_json(root: pathlib.Path, check_only: bool) -> int:
     """去掉本地端点，把「自定义 API」提到第一位，并写清用法。"""
@@ -135,16 +202,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         print("check: would apply cleanly" if text != original else "check: nothing to do")
         rc = patch_providers_json(pathlib.Path(args.root), check_only=True)
-        return 0 if rc == 0 else rc
+        if rc:
+            return rc
+        return patch_codex(pathlib.Path(args.root), check_only=True)
 
     if text != original:
         path.write_text(text, encoding="utf-8")
         print(f"wrote {path}")
 
     rc = patch_providers_json(pathlib.Path(args.root), check_only=False)
-    if rc != 0:
+    if rc:
         return rc
-    return 0
+    return patch_codex(pathlib.Path(args.root), check_only=False)
 
 
 if __name__ == "__main__":
