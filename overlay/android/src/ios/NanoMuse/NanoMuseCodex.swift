@@ -29,8 +29,12 @@ public enum NanoMuseCodex {
 
     // MARK: - 基础
 
-    private static func run(_ command: String) -> (Int32, String, String, TimeInterval) {
-        let result = ISHShellExecutor.executeCommandSync(command)
+    private static func run(
+        _ command: String,
+        timeout: TimeInterval = 900
+    ) -> (Int32, String, String, TimeInterval) {
+        // 桥接签名：executeCommandSync(_:timeout:lineCallback:)
+        let result = ISHShellExecutor.executeCommandSync(command, timeout: timeout, lineCallback: nil)
         return (result.exitCode, result.output ?? "", result.errorOutput ?? "", result.duration)
     }
 
