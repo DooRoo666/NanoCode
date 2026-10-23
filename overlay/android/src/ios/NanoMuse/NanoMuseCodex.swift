@@ -44,9 +44,10 @@ public enum NanoMuseCodex {
             var lines: [String] = []
             var finished = false
 
+            // 上游只提供 executeCommand(_:lineCallback:completion:)：
+            // 没有 timeout 参数、completion 的 result 也非可选，所以超时交给脚本自身处理。
             _ = ISHShellExecutor.executeCommand(
                 command,
-                timeout: timeout,
                 lineCallback: { line, _ in
                     lock.lock(); lines.append(line); lock.unlock()
                 },
@@ -56,7 +57,7 @@ public enum NanoMuseCodex {
                     finished = true
                     let collected = lines
                     lock.unlock()
-                    continuation.resume(returning: (result?.exitCode ?? -1, collected.joined(separator: "\n")))
+                    continuation.resume(returning: (result.exitCode, collected.joined(separator: "\n")))
                 }
             )
         }
@@ -88,9 +89,8 @@ public enum NanoMuseCodex {
     ) -> Bool {
         let pid = ISHShellExecutor.executeCommand(
             script,
-            timeout: timeout,
             lineCallback: { line, _ in onLine(line) },
-            completion: { result in onFinish((result?.exitCode ?? -1) == 0) }
+            completion: { result in onFinish(result.exitCode == 0) }
         )
         return pid > 0
     }
