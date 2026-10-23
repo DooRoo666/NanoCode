@@ -135,7 +135,7 @@ enum NanoMuseNativeRuntime {
             return false
         }
         guard await extract(payload: payload, into: destination, log: log) else {
-            await log.add("ERR 解包失败（ca-filetool tar 返回非 0）")
+            await log.add("ERR 解包失败（详情见上方步骤；注意 guest 路径是否可见、zstd 是否装上）")
             return false
         }
         try? FileManager.default.removeItem(at: archive)
@@ -342,11 +342,13 @@ enum NanoMuseNativeRuntime {
             guard size > 0 else { continue }
 
             if name.hasPrefix(matchingPrefix) {
-                guard let payload = try? handle.read(upToCount: size) else { return nil }
                 let suffix = name.hasSuffix(".xz") ? "xz" : (name.hasSuffix(".zst") ? "zst" : "gz")
                 let out = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("payload-\(UUID().uuidString.prefix(6)).tar.\(suffix)")
-                try? payload.write(to: out)
+                    .appendingPathComponent("input-\(UUID().uuidString.prefix(6)).tar.\(suffix)")
+                guard stream(handle: handle, bytes: size, to: out) else {
+                    await log.add("  写出载荷失败")
+                    return nil
+                }
                 if suffix == "gz" { return out }
                 await log.add("  deb 内层为 .\(suffix)：交给 Alpine 解压（zstd/xz 由 apk 提供）")
                 return out
@@ -398,9 +400,17 @@ enum NanoMuseNativeRuntime {
         }
 
         let token = String(UUID().uuidString.prefix(8)).lowercased()
-        let stagingHost = rootfsData.appendingPathComponent("tmp/nanocodex-\(token)")
-        let stagingGuest = "/tmp/nanocodex-\(token)"
-        let payloadName = "payload-" + payload.lastPathComponent
+        // 放 /root 而不是 /tmp：/tmp 可能被挂成 tmpfs，宿主写入看不到
+        let stagingHost = rootfsData.appendingPathComponent("root/.nanocodex-\(token)")
+        let stagingGuest = "/root/.nanocodex-\(token)"
+
+        // 载荷名：只保留扩展名，避免 "payload-payload-xxx"
+        let suffixTag: String
+        if payload.lastPathComponent.hasSuffix(".tar.zst") { suffixTag = "tar.zst" }
+        else if payload.lastPathComponent.hasSuffix(".tar.xz") { suffixTag = "tar.xz" }
+        else if payload.lastPathComponent.hasSuffix(".tar.gz") { suffixTag = "tar.gz" }
+        else { suffixTag = "bin" }
+        let payloadName = "input.\(suffixTag)"
 
         do {
             try FileManager.default.createDirectory(at: stagingHost, withIntermediateDirectories: true)
@@ -410,12 +420,18 @@ enum NanoMuseNativeRuntime {
             await log.add("ERR 复制载荷到 rootfs 失败：\(error.localizedDescription)")
             return false
         }
-        let sizeMB = ((try? FileManager.default.attributesOfItem(atPath: stagingHost.path)[.size] as? Int) ?? 0)
+
+        // ★ 关键：iSH 的 fakefs 用 meta.db 描述目录树，
+        //   纯宿主写入的文件没有 meta 行，guest 里看不到 → 必须注册。
+        RootfsManager.shared.registerSubtreeInMetaDB(hostRoot: stagingHost)
+        await log.add("  已注册到 iSH meta.db（否则 guest 看不到）")
         await log.add("  载荷已放入 rootfs：\(stagingGuest)/\(payloadName)")
 
         let script = #"""
         set -u
-        cd __GUEST__ || exit 10
+        echo "GUEST_DIR=__GUEST__"
+        ls -la __GUEST__ 2>&1 | head -5
+        cd __GUEST__ || { echo "CD_FAIL"; exit 10; }
         rm -rf out && mkdir -p out
         case "__NAME__" in
           *.zst)
@@ -462,6 +478,21 @@ enum NanoMuseNativeRuntime {
         }
         try? FileManager.default.removeItem(at: stagingHost)
         return true
+    }
+
+    /// 从 handle 里按块搬 `bytes` 字节到文件，避免把上百 MB 读进内存
+    private static func stream(handle: FileHandle, bytes: Int, to url: URL) -> Bool {
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        guard let sink = try? FileHandle(forWritingTo: url) else { return false }
+        defer { try? sink.close() }
+        var remaining = bytes
+        while remaining > 0 {
+            let chunk = min(remaining, 4 << 20)
+            guard let data = try? handle.read(upToCount: chunk), !data.isEmpty else { break }
+            sink.write(data)
+            remaining -= data.count
+        }
+        return remaining == 0
     }
 
     // MARK: - 权限 / 签名 / 探测
