@@ -72,6 +72,7 @@ struct NanoMuseMermaidView: UIViewRepresentable {
 /// 自检预览：点一下就渲染一张示例图，用来确认随包资源可用。
 struct NanoMuseMermaidPreviewPage: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     private let sample = """
     flowchart LR
@@ -83,7 +84,7 @@ struct NanoMuseMermaidPreviewPage: View {
 
     var body: some View {
         NavigationStack {
-            NanoMuseMermaidView(source: sample)
+            NanoMuseMermaidView(source: sample, dark: colorScheme == .dark)
                 .navigationTitle("Mermaid 预览")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {

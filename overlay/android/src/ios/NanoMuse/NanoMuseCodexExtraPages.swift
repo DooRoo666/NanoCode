@@ -16,7 +16,7 @@ extension NanoMuseCodexView {
             .buttonStyle(.plain)
             NanoMuseRowDivider()
             NavigationLink { NanoMuseWorktreePage() } label: {
-                row(title: "Git Worktree", subtitle: "为 Codex 建独立工作树")
+                row(title: "工作树", subtitle: "为 Codex 建独立 git worktree")
             }
             .buttonStyle(.plain)
             NanoMuseRowDivider()
@@ -39,7 +39,9 @@ extension NanoMuseCodexView {
                 Text(subtitle).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 8)
-            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -166,7 +168,16 @@ struct NanoMuseRuntimePage: View {
             if runningID == package.id {
                 ProgressView().controlSize(.small)
             } else if installed[package.id] == true {
-                Text("已安装").font(.footnote).foregroundStyle(NanoMuseTones.action)
+                Menu {
+                    Button("卸载", role: .destructive) {
+                        Task {
+                            NanoMuseNativeRuntime.uninstall(package.id)
+                            await load()
+                        }
+                    }
+                } label: {
+                    Text("已安装").font(.footnote).foregroundStyle(NanoMuseTones.action)
+                }
             } else {
                 Button {
                     Task { await install(package) }
@@ -235,15 +246,21 @@ struct NanoMuseRuntimePage: View {
 
 struct NanoMuseSubagentPage: View {
     @ObservedObject private var center = NanoMuseSubagentCenter.shared
+    @State private var showDispatch = false
+    @State private var draftPrompt = ""
+    @State private var draftWorkspace = "/root/work"
 
     var body: some View {
         NanoMusePage(title: "子代理") {
             NanoMuseCard {
                 NanoMuseRowLabel(title: "作业数", value: "\(center.recent().count)", titleColor: .primary, chevron: false)
                 NanoMuseRowDivider()
+                NanoMuseActionRow(title: "手动派一个任务", chevron: false) { showDispatch = true }
+                NanoMuseRowDivider()
                 NanoMuseActionRow(title: "清除已结束", chevron: false) { center.clearFinished() }
             }
-            NanoMuseCaption(text: "主 Agent 用 subagent_dispatch 把编码任务派给后台 Codex，subagent_result 取回结果；完成时发本地通知。")
+            NanoMuseCaption(text: "主 Agent 用 subagent_dispatch 把编码任务派给后台 Codex，subagent_result 取回结果；完成时发本地通知。也可以在这里手动派一个。")
+            .sheet(isPresented: $showDispatch) { dispatchSheet }
 
             let jobs = center.recent()
             if jobs.isEmpty {
@@ -279,6 +296,50 @@ struct NanoMuseSubagentPage: View {
             }
         }
     }
+    private var dispatchSheet: some View {
+        NanoMusePage(title: "派发任务") {
+            NanoMuseCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("任务").font(.body)
+                    TextEditor(text: $draftPrompt)
+                        .font(.body.monospaced())
+                        .frame(minHeight: 96)
+                        .scrollContentBackground(.hidden)
+                        .background(NanoMuseTones.canvas, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(alignment: .topLeading) {
+                            if draftPrompt.isEmpty {
+                                Text("例如：把这个目录改成可运行的 Python CLI")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                                    .padding(.top, 8).padding(.leading, 6)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+
+                NanoMuseRowDivider()
+                HStack(spacing: 12) {
+                    Text("目录").font(.body).frame(width: 72, alignment: .leading)
+                    TextField("/root/work", text: $draftWorkspace)
+                        .font(.body.monospaced())
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+
+                NanoMuseRowDivider()
+                NanoMuseActionRow(title: "派发到后台", chevron: false) {
+                    let prompt = draftPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !prompt.isEmpty else { return }
+                    center.dispatch(kind: .codex, prompt: prompt, workspace: draftWorkspace)
+                    draftPrompt = ""
+                    showDispatch = false
+                }
+            }
+            NanoMuseCaption(text: "派发后立刻返回，任务在后台跑；完成时回到这个页面看输出。")
+        }
+    }
 }
 
 // MARK: - Git Worktree
@@ -292,7 +353,7 @@ struct NanoMuseWorktreePage: View {
     @State private var message = ""
 
     var body: some View {
-        NanoMusePage(title: "Worktree") {
+        NanoMusePage(title: "工作树") {
             NanoMuseCard {
                 HStack(spacing: 12) {
                     Text("工作区").font(.body).frame(width: 72, alignment: .leading)
@@ -435,7 +496,7 @@ struct NanoMuseSignerPage: View {
                 .padding(.horizontal, 16).padding(.vertical, 12)
 
                 HStack(spacing: 12) {
-                    Text("目标").font(.body).frame(width: 56, alignment: .leading)
+                    Text("目标").font(.body).frame(width: 72, alignment: .leading)
                     TextField("App 容器内的二进制路径", text: $target)
                         .font(.body.monospaced())
                         .multilineTextAlignment(.trailing)
@@ -498,7 +559,7 @@ struct NanoMuseNativeShellPage: View {
         NanoMusePage(title: "原生 Shell") {
             NanoMuseCard {
                 HStack(spacing: 12) {
-                    Text("命令").font(.body).frame(width: 56, alignment: .leading)
+                    Text("命令").font(.body).frame(width: 72, alignment: .leading)
                     TextField("例如 ls -l 或 codex-sign --help", text: $command)
                         .font(.body.monospaced())
                         .multilineTextAlignment(.trailing)

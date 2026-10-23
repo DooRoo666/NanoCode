@@ -55,6 +55,18 @@ enum NanoMuseNativeRuntime {
         return contents.filter { isInstalled($0) }
     }
 
+    /// 卸载：删掉整个运行时目录
+    @discardableResult
+    static func uninstall(_ id: String) -> Bool {
+        let dir = directory(for: id)
+        do {
+            try FileManager.default.removeItem(at: dir)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - 安装主流程
 
     static func install(_ package: NanoMuseRuntimeManifest.Package,

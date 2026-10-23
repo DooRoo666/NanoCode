@@ -14,7 +14,8 @@ enum NanoMuseMermaidAttachment {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, NanoMuseCodexAssets.mermaidDirectory != nil else { return nil }
 
-        let host = UIHostingController(rootView: MermaidBlockView(source: trimmed))
+        let isDark = UITraitCollection.current.userInterfaceStyle == .dark
+        let host = UIHostingController(rootView: MermaidBlockView(source: trimmed, dark: isDark))
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = false
 
@@ -34,9 +35,10 @@ enum NanoMuseMermaidAttachment {
     /// SwiftUI 侧的同款包装（预览页复用）
     struct MermaidBlockView: View {
         let source: String
+        var dark: Bool = true
 
         var body: some View {
-            NanoMuseMermaidView(source: source, dark: true)
+            NanoMuseMermaidView(source: source, dark: dark)
                 .frame(maxWidth: .infinity)
                 .frame(height: NanoMuseMermaidAttachment.height)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

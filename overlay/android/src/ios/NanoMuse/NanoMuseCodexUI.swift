@@ -372,7 +372,7 @@ struct NanoMuseCodexView: View {
             Text(title)
                 .font(.body)
                 .foregroundStyle(.primary)
-                .frame(width: 84, alignment: .leading)
+                .frame(width: 72, alignment: .leading)
             Group {
                 if secure {
                     SecureField(placeholder, text: text)
