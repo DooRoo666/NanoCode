@@ -152,7 +152,7 @@ enum NanoMuseNativeRuntime {
 
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? []
         await log.add("  内容：\(entries.prefix(6).joined(separator: " "))")
-        normalizeSingleLevel(destination: destination, log: log)
+        await normalizeSingleLevel(destination: destination, log: log)
 
         // ---- 权限 / 签名 / 探测 ----
         await log.add("STEP 5/5 权限与探测")
