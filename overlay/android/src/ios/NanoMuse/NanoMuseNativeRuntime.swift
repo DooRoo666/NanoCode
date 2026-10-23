@@ -103,57 +103,56 @@ enum NanoMuseNativeRuntime {
 
         let destination = directory(for: package.id)
 
-        // ---- 下载 ----
-        await log.add("STEP 2/5 下载")
-        await log.setPhase("下载中…")
-        guard let archive = await download(package.archiveURL, proxies: proxies, log: log) else {
-            await log.add("ERR 下载失败（直连与代理都不可用）")
-            return false
-        }
-        await log.add("  已落地：\(archive.lastPathComponent)")
+        // ---- 下载 / 校验 / 解包 ----
+        // 决策依据（真机实测）：Swift 往 rootfs 目录写文件后，guest 里只能看到目录、
+        // 看不到文件（`total 0`）——iSH 的 fakefs 只认 meta.db 里有记录的条目。
+        // 反过来，guest 自己创建的文件是**真实宿主文件**，Swift 一定能读到。
+        // 所以 .deb 一律交给 Alpine：下载、ar 拆包、zstd 解压、tar 解文件。
+        if package.archiveURL.lowercased().hasSuffix(".deb") {
+            guard await installViaAlpine(package, proxies: proxies,
+                                         destination: destination, log: log) else {
+                await log.add("ERR Alpine 端下载/解包未完成")
+                return false
+            }
+        } else {
+            await log.add("STEP 2/5 下载")
+            await log.setPhase("下载中…")
+            guard let archive = await download(package.archiveURL, proxies: proxies, log: log) else {
+                await log.add("ERR 下载失败（直连与代理都不可用）")
+                return false
+            }
+            await log.add("  已落地：\(archive.lastPathComponent)")
 
-        // ---- 校验 ----
-        await log.add("STEP 3/5 校验 SHA256")
-        await log.setPhase("校验 SHA256")
-        let digest = (try? sha256(of: archive)) ?? ""
-        await log.add("  期望：\(package.sha256)")
-        await log.add("  实际：\(digest)")
-        guard !package.sha256.isEmpty, digest == package.sha256 else {
-            await log.add("ERR sha256 不匹配，已丢弃")
+            await log.add("STEP 3/5 校验 SHA256")
+            await log.setPhase("校验 SHA256")
+            let digest = (try? sha256(of: archive)) ?? ""
+            await log.add("  期望：\(package.sha256)")
+            await log.add("  实际：\(digest)")
+            guard !package.sha256.isEmpty, digest == package.sha256 else {
+                await log.add("ERR sha256 不匹配，已丢弃")
+                try? FileManager.default.removeItem(at: archive)
+                return false
+            }
+
+            await log.add("STEP 4/5 解包")
+            await log.setPhase("解包中…")
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+            guard let payload = await preparePayload(archive: archive, log: log) else {
+                await log.add("ERR 无法准备解包载荷（不支持的压缩格式）")
+                return false
+            }
+            guard await extract(payload: payload, into: destination, log: log) else {
+                await log.add("ERR 解包失败（详情见上方步骤）")
+                return false
+            }
             try? FileManager.default.removeItem(at: archive)
-            return false
         }
-
-        // ---- 解包 ----
-        await log.add("STEP 4/5 解包")
-        await log.setPhase("解包中…")
-        try? FileManager.default.removeItem(at: destination)
-        try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-
-        guard let payload = await preparePayload(archive: archive, log: log) else {
-            await log.add("ERR 无法准备解包载荷（不支持的压缩格式）")
-            return false
-        }
-        guard await extract(payload: payload, into: destination, log: log) else {
-            await log.add("ERR 解包失败（详情见上方步骤；注意 guest 路径是否可见、zstd 是否装上）")
-            return false
-        }
-        try? FileManager.default.removeItem(at: archive)
 
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? []
         await log.add("  内容：\(entries.prefix(6).joined(separator: " "))")
-
-        // 单层目录归一
-        if entries.count == 1, let only = entries.first,
-           !FileManager.default.fileExists(atPath: destination.appendingPathComponent("bin").path) {
-            let inner = destination.appendingPathComponent(only)
-            await log.add("  归一化单层目录：\(only)")
-            for child in (try? FileManager.default.contentsOfDirectory(atPath: inner.path)) ?? [] {
-                try? FileManager.default.moveItem(at: inner.appendingPathComponent(child),
-                                                  to: destination.appendingPathComponent(child))
-            }
-            try? FileManager.default.removeItem(at: inner)
-        }
+        normalizeSingleLevel(destination: destination, log: log)
 
         // ---- 权限 / 签名 / 探测 ----
         await log.add("STEP 5/5 权限与探测")
@@ -180,6 +179,139 @@ enum NanoMuseNativeRuntime {
         await log.setPhase("完成")
         await log.setProgress(1)
         return true
+    }
+
+    /// 让 Alpine 完成「下载 → ar 拆包 → zstd 解压 → tar 解文件」，
+    /// Swift 只负责把 guest 生成的结果搬进 App 容器。
+    private static func installViaAlpine(_ package: NanoMuseRuntimeManifest.Package,
+                                        proxies: [String],
+                                        destination: URL,
+                                        log: Log) async -> Bool {
+        let rootfsData = RootfsManager.shared.dataPath
+        guard FileManager.default.fileExists(atPath: rootfsData.path) else {
+            await log.add("ERR iSH rootfs 未就绪")
+            return false
+        }
+
+        let token = String(UUID().uuidString.prefix(8)).lowercased()
+        let stageName = ".nanocodex-\(token)"
+        let guest = "/root/\(stageName)"
+        let hostOut = rootfsData.appendingPathComponent("root/\(stageName)/out")
+
+        let urls = ([""] + proxies).map { "\($0)\(package.archiveURL)" }
+            .map { "\"\($0)\"" }
+            .joined(separator: " ")
+        let total = package.sizeBytes
+
+        let script = #"""
+        set -u
+        D=__GUEST__
+        rm -rf "$D"; mkdir -p "$D/out"; cd "$D" || { echo CD_FAIL; exit 10; }
+        echo "GUEST=$D"
+        apk add --no-cache curl tar zstd >/dev/null 2>&1 || true
+        command -v zstd >/dev/null 2>&1 || { echo NO_ZSTD; exit 11; }
+
+        OK=0
+        for U in __URLS__; do
+          echo "TRY $U"
+          ( curl -fL --retry 1 --connect-timeout 20 -o pkg.deb "$U" 2>/dev/null ) &
+          CPID=$!
+          while kill -0 $CPID 2>/dev/null; do
+            SZ=$(stat -c %s pkg.deb 2>/dev/null || echo 0)
+            echo "BYTES $SZ __TOTAL__"
+            sleep 1
+          done
+          wait $CPID && OK=1
+          SZ=$(stat -c %s pkg.deb 2>/dev/null || echo 0)
+          echo "BYTES $SZ __TOTAL__"
+          if [ "$OK" = "1" ] && [ "$SZ" -gt 1000000 ]; then break; fi
+          OK=0
+        done
+        [ "$OK" = "1" ] || { echo NO_DOWNLOAD; exit 12; }
+
+        echo "SIZE=$(stat -c %s pkg.deb)"
+        echo "SHA256=$(sha256sum pkg.deb | cut -d' ' -f1)"
+
+        command -v ar >/dev/null 2>&1 || apk add --no-cache binutils >/dev/null 2>&1
+        rm -rf x && mkdir x
+        ( cd x && ar x ../pkg.deb ) 2>&1 | head -3 || { echo NO_AR; exit 13; }
+        ls -l x 2>/dev/null | head -5
+
+        if [ -f x/data.tar.zst ]; then
+          zstd -d -q -f x/data.tar.zst -o x/data.tar || { echo NO_ZSTD_DECODE; exit 14; }
+          tar xf x/data.tar -C out || { echo NO_UNTAR; exit 15; }
+        elif [ -f x/data.tar.xz ]; then
+          tar xJf x/data.tar.xz -C out || { echo NO_UNTAR; exit 15; }
+        elif [ -f x/data.tar.gz ]; then
+          tar xzf x/data.tar.gz -C out || { echo NO_UNTAR; exit 15; }
+        else
+          echo NO_DATA; exit 16
+        fi
+
+        echo "EXTRACT_OK"
+        find out -maxdepth 2 -type f | head -8 | sed 's/^/  /'
+        rm -rf x pkg.deb
+        """#
+            .replacingOccurrences(of: "__GUEST__", with: guest)
+            .replacingOccurrences(of: "__URLS__", with: urls)
+            .replacingOccurrences(of: "__TOTAL__", with: String(total))
+
+        await log.add("STEP 2-4/5 Alpine 端下载并解包")
+        await log.setPhase("Alpine 下载中…")
+        let (code, output) = await NanoMuseCodex.runCommand(script, timeout: 2400)
+        for line in output.split(separator: "\n") { await log.add("  " + String(line)) }
+
+        guard code == 0, output.contains("EXTRACT_OK") else {
+            await log.add("ERR 解包脚本失败（rc=\(code)）")
+            try? FileManager.default.removeItem(at: rootfsData.appendingPathComponent("root/\(stageName)"))
+            return false
+        }
+
+        // 校验 SHA256（由 guest 计算，Swift 比对）
+        if let range = output.range(of: "SHA256=") {
+            let rest = output[range.upperBound...]
+            let digest = String(rest.prefix(while: { $0 != "\n" && $0 != "\r" }))
+            await log.add("  期望 sha256：\(package.sha256)")
+            await log.add("  实际 sha256：\(digest)")
+            if !package.sha256.isEmpty, digest != package.sha256 {
+                await log.add("ERR sha256 不匹配，已丢弃")
+                try? FileManager.default.removeItem(at: rootfsData.appendingPathComponent("root/\(stageName)"))
+                return false
+            }
+        }
+
+        // 把 guest 生成的结果搬进 App 容器（guest→host 是真实文件）
+        try? FileManager.default.removeItem(at: destination)
+        try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let children = (try? FileManager.default.contentsOfDirectory(atPath: hostOut.path)) ?? []
+        await log.add("  guest 产出：\(children.count) 项")
+        guard !children.isEmpty else {
+            await log.add("ERR guest 没产出文件（检查 out 目录）")
+            return false
+        }
+        for child in children {
+            let from = hostOut.appendingPathComponent(child)
+            let to = destination.appendingPathComponent(child)
+            try? FileManager.default.moveItem(at: from, to: to)
+        }
+        try? FileManager.default.removeItem(at: rootfsData.appendingPathComponent("root/\(stageName)"))
+        return true
+    }
+
+    /// 单层目录归一：`out/bin` → `bin`
+    private static func normalizeSingleLevel(destination: URL, log: Log) async {
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? []
+        guard entries.count == 1, let only = entries.first else { return }
+        let inner = destination.appendingPathComponent(only)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: inner.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
+        await log.add("  归一化单层目录：\(only)")
+        for child in (try? FileManager.default.contentsOfDirectory(atPath: inner.path)) ?? [] {
+            try? FileManager.default.moveItem(at: inner.appendingPathComponent(child),
+                                              to: destination.appendingPathComponent(child))
+        }
+        try? FileManager.default.removeItem(at: inner)
     }
 
     // MARK: - 下载（直连 → 代理回退）
