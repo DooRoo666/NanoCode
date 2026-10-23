@@ -29,18 +29,14 @@ jobs:
     name: xcodebuild → NanoCode.tipa
     runs-on: macos-26
     timeout-minutes: 180
-    env:
-      GO_VERSION: "1.25"
-      UPSTREAM_REPO: nano-muse/nanoMuse
-      UPSTREAM_REF: ${{ github.event.inputs.upstream_ref || 'main' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Checkout nanoMuse (submodules: iSH, proot)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.UPSTREAM_REPO }}
-          ref: ${{ env.UPSTREAM_REF }}
+          repository: nano-muse/nanoMuse
+          ref: ${{ github.event.inputs.upstream_ref || 'main' }}
           path: upstream
           submodules: recursive
           fetch-depth: 0
@@ -48,7 +44,7 @@ jobs:
       - name: Record upstream identity
         run: |
           echo "NANOMUSE_SHA=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "resolved $UPSTREAM_REPO@$(git -C upstream rev-parse --short HEAD)"
+          echo "resolved nano-muse/nanoMuse@$(git -C upstream rev-parse --short HEAD)"
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -56,7 +52,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: "1.25"
           cache-dependency-path: upstream/android/deps/rclone-mobile/go.sum
 
       - name: Homebrew (iSH kernel + rootfs tooling + ldid)
