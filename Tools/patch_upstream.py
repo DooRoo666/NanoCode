@@ -132,6 +132,21 @@ SUBAGENT_DISPATCH_INSERT = '''        case "subagent_dispatch":
 '''
 
 
+
+# ---- Mermaid 代码块接管 -----------------------------------------------------
+MERMAID_FILE = "Views/Chat/SelectableMarkdownView.swift"
+# 用「代码块容器」这一行做锚点：它在整个文件里唯一，且一定在 CodeBlockAttachment.makeView 内
+MERMAID_ANCHOR = """        let container = UIView()
+        container.backgroundColor = theme.codeBlockBackground
+"""
+MERMAID_INSERT = """
+        // [NanoCode] ```mermaid 代码块交给随包的 mermaid.min.js 本地渲染
+        if language?.lowercased() == "mermaid",
+           let mermaidView = NanoMuseMermaidAttachment.makeView(code: code, width: width) {
+            return mermaidView
+        }
+"""
+
 def _insert_once(root: pathlib.Path, rel: str, anchor: str, marker: str, insert: str,
                  label: str, check_only: bool, before: bool = False) -> int:
     """在 anchor 之后插入 insert；marker 已存在则视为已接线。"""
@@ -169,6 +184,8 @@ def patch_codex(root: pathlib.Path, check_only: bool) -> int:
          SUBAGENT_DISPATCH_INSERT, "tool dispatch (subagent)", True),
         (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
          SETTINGS_INSERT, "settings card (Codex)", False),
+        (MERMAID_FILE, MERMAID_ANCHOR, "NanoMuseMermaidAttachment.makeView",
+         MERMAID_INSERT, "mermaid code block hook", False),
     ]
     for rel, anchor, marker, insert, label, before in steps:
         rc = _insert_once(root, rel, anchor, marker, insert, label, check_only, before=before)

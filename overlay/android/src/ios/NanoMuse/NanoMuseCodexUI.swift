@@ -27,6 +27,7 @@ struct NanoMuseCodexView: View {
     // 在线模型
     @State private var models: [String] = []
     @State private var showMermaid = false
+    @State private var useFallbackPrompt = NanoMuseCodexSettings.useFallbackPrompt
     @State private var fetchingModels = false
     @State private var modelError: String?
 
@@ -39,31 +40,34 @@ struct NanoMuseCodexView: View {
 
     var body: some View {
         NanoMusePage(title: "Codex") {
-            statusCard
-            NanoMuseCaption(text: "在手机本地的 Alpine（aarch64）里安装官方 codex 二进制。装好后 Agent 就能用 codex_exec 工具自主改代码。")
-
-            toolsCard
-            NanoMuseCaption(text: "每项可单独下载；点「安装」后下面的回显区会逐步打印命令、下载字节数、SHA256、ELF 头与版本。")
-
-            signingCard
-            NanoMuseCaption(text: "这三个是 MT-Agent 随包带的原生工具（Mach-O，跑在 iOS 上，不在 Alpine 里）：codex-sign 给编译产物签权限，ca-filetool 是多调用工具集，bash.real 是真正的 bash。")
-
-            assetsCard
-            extraCard
-            NanoMuseCaption(text: "这些是原版随包的资源：Mermaid 本地渲染、cacert.pem 信任根、models.json 离线模型表、20.9 KB 兜底提示词、entitlements.plist 签名模板与第三方声明。")
-
-            logCard
-
+            // ① 先配置：模型来源 → 凭据 → 模型
             sourceCard
-            NanoMuseCaption(text: "「使用 nanoMuse 的模型服务」= 直接借用你在「设置 › 模型」里配好的地址与密钥；「自己设置第三方」= 单独填一套，互不影响。")
+            NanoMuseCaption(text: "「使用 nanoMuse 的模型服务」直接借用「设置 › 模型」里已配好的地址与密钥；「自己设置第三方」单独填一套，互不影响。")
 
             if source == .custom {
                 customCredentialCard
             }
 
             modelCard
-            NanoMuseCaption(text: "模型列表来自该地址的 /v1/models；也可以手动输入模型名。")
+            NanoMuseCaption(text: "模型列表来自该地址的 /v1/models；拉不到时自动用随包 models.json 兜底，也可以手动输入模型名。")
 
+            // ② 再安装：状态 → 工具 → 原生工具 → 资源 → 更多
+            statusCard
+            NanoMuseCaption(text: "推荐在「运行时」里用原生方式安装 codex（原版 iphoneos-arm64 包，跑在 iOS 上）；这里的 Alpine 方式适合纯 Linux 工具。")
+
+            toolsCard
+            NanoMuseCaption(text: "每项可单独安装；点「安装」后回显区会逐步打印命令、下载字节数、SHA256、ELF/版本信息。")
+
+            signingCard
+            NanoMuseCaption(text: "codex-sign 给 Mach-O 产物签权限，ca-filetool 是多调用工具集（cat/ls/grep/tar），bash.real 是真正的 bash——三者都是 iOS 原生，不在 Alpine 里。")
+
+            assetsCard
+            NanoMuseCaption(text: "原版随包资源：Mermaid 本地渲染、cacert.pem 信任根、models.json 离线模型表、20.9 KB 兜底提示词、entitlements.plist 签名模板与第三方声明。")
+
+            extraCard
+
+            // ③ 回显与试跑
+            logCard
             runCard
             if !output.isEmpty { outputCard }
         }
@@ -220,6 +224,16 @@ struct NanoMuseCodexView: View {
             NanoMuseActionRow(title: "Mermaid 渲染预览", chevron: false) {
                 showMermaid = true
             }
+            NanoMuseRowDivider()
+            NanoMuseToggleRow(title: "拼接兜底提示词",
+                              subtitle: "把随包的 codex-fallback-prompt.md（20.9 KB）拼到任务前",
+                              isOn: Binding(
+                                get: { useFallbackPrompt },
+                                set: { newValue in
+                                    useFallbackPrompt = newValue
+                                    NanoMuseCodexSettings.useFallbackPrompt = newValue
+                                }
+                              ))
             if let hint = NanoMuseCodexAssets.codexVersionHint() {
                 NanoMuseRowDivider()
                 NanoMuseRowLabel(title: "原版 codex 版本参照", value: hint, titleColor: .primary, chevron: false)

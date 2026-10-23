@@ -33,8 +33,8 @@ enum NanoMuseTools {
                 checkCommand: "jq --version 2>&1",
                 installScript: #"""
                 set -u
-                echo "STEP 1/2 安装 curl wget unzip zip jq tar"
-                apk add --no-cache curl wget unzip zip jq tar 2>&1 | tail -8
+                echo "STEP 1/2 安装 curl wget unzip zip jq tar ca-certificates"
+                apk add --no-cache curl wget unzip zip jq tar ca-certificates 2>&1 | tail -8
                 echo "STEP 2/2 验证"
                 for t in curl wget unzip zip jq tar; do
                   if command -v $t >/dev/null 2>&1; then echo "  $t = $(command -v $t)"; else echo "  $t = 缺失"; fi

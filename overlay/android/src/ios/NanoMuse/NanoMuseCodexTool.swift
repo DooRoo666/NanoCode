@@ -87,18 +87,31 @@ enum NanoMuseCodexSettings {
     static var current: Values {
         let defaults = UserDefaults.standard
         let raw = defaults.string(forKey: Key.source) ?? NanoMuseCodexSource.followNano.rawValue
+        // 旧版本把 Key 明文存在 UserDefaults，读到就迁到 Keychain 并清掉
+        var key = NanoMuseCodexKeychain.load() ?? ""
+        if key.isEmpty, let legacy = defaults.string(forKey: Key.apiKey), !legacy.isEmpty {
+            NanoMuseCodexKeychain.save(legacy)
+            defaults.removeObject(forKey: Key.apiKey)
+            key = legacy
+        }
         return Values(
             source: NanoMuseCodexSource(rawValue: raw) ?? .followNano,
-            apiKey: defaults.string(forKey: Key.apiKey) ?? "",
+            apiKey: key,
             baseURL: defaults.string(forKey: Key.baseURL) ?? "",
             model: defaults.string(forKey: Key.model) ?? ""
         )
     }
 
+    /// 是否把随包的 codex-fallback-prompt.md 拼进任务前面（20.9 KB 工作准则）
+    static var useFallbackPrompt: Bool {
+        get { UserDefaults.standard.bool(forKey: "nanocodex.fallbackPrompt") }
+        set { UserDefaults.standard.set(newValue, forKey: "nanocodex.fallbackPrompt") }
+    }
+
     static func save(source: NanoMuseCodexSource, apiKey: String, baseURL: String, model: String) {
         let defaults = UserDefaults.standard
         defaults.set(source.rawValue, forKey: Key.source)
-        defaults.set(apiKey, forKey: Key.apiKey)
+        NanoMuseCodexKeychain.save(apiKey)
         defaults.set(baseURL, forKey: Key.baseURL)
         defaults.set(model, forKey: Key.model)
     }

@@ -25,6 +25,16 @@ enum NanoMuseRuntimeManifest {
         let probeArguments: [String]
         let probeContains: String?
         let capabilities: [String]
+        /// `install.environment`，值里可能含 `${RUNTIME_ROOT}`
+        let environment: [String: String]
+        /// 解包后体积（清单给的上限参考）
+        let unpackedSize: Int
+        let minimumIOS: String?
+        /// 依赖的运行时 id（清单 requires[].id）
+        let requires: [String]
+        /// 与之冲突的运行时 id
+        let conflicts: [String]
+        let isOptional: Bool
 
         var sizeText: String { String(format: "%.1f MB", Double(sizeBytes) / 1048576) }
     }
@@ -81,7 +91,13 @@ enum NanoMuseRuntimeManifest {
                 pathEntries: install["path_entries"] as? [String] ?? [],
                 probeArguments: probe["arguments"] as? [String] ?? [],
                 probeContains: probe["contains"] as? String,
-                capabilities: Array((entry["capabilities"] as? [String: Any] ?? [:]).keys).sorted()
+                capabilities: Array((entry["capabilities"] as? [String: Any] ?? [:]).keys).sorted(),
+                environment: (install["environment"] as? [String: String]) ?? [:],
+                unpackedSize: entry["unpacked_size"] as? Int ?? 0,
+                minimumIOS: entry["minimum_ios"] as? String,
+                requires: (entry["requires"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String },
+                conflicts: entry["conflicts"] as? [String] ?? [],
+                isOptional: entry["optional"] as? Bool ?? false
             ))
         }
         packages.sort { lhs, rhs in

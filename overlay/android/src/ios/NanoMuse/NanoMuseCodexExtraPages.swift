@@ -19,6 +19,16 @@ extension NanoMuseCodexView {
                 row(title: "Git Worktree", subtitle: "为 Codex 建独立工作树")
             }
             .buttonStyle(.plain)
+            NanoMuseRowDivider()
+            NavigationLink { NanoMuseSignerPage() } label: {
+                row(title: "签名工具", subtitle: "codex-sign：给 Mach-O 产物签权限")
+            }
+            .buttonStyle(.plain)
+            NanoMuseRowDivider()
+            NavigationLink { NanoMuseNativeShellPage() } label: {
+                row(title: "原生 Shell", subtitle: "bash.real + ca-filetool（iOS 本机执行）")
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -40,28 +50,69 @@ extension NanoMuseCodexView {
 // MARK: - 运行时（manifest）
 
 struct NanoMuseRuntimePage: View {
+
+    /// 安装目标有两种：原生（App 容器，Mach-O，推荐）与 Alpine（Linux ELF）。
+    enum Mode: String, CaseIterable, Identifiable {
+        case native, alpine
+        var id: String { rawValue }
+        var title: String { self == .native ? "原生（推荐）" : "Alpine" }
+        var hint: String {
+            switch self {
+            case .native: return "解到 App 容器，Mach-O 由 posix_spawn 直接跑"
+            case .alpine: return "解到 iSH 的 /opt/runtimes，适合纯 Linux 工具"
+            }
+        }
+    }
+
+    @State private var mode: Mode = .native
     @State private var packages: [NanoMuseRuntimeManifest.Package] = []
     @State private var proxies: [String] = []
     @State private var installed: [String: Bool] = [:]
     @State private var manifestError: String?
     @State private var runningID: String?
     @State private var logLines: [String] = []
-    @State private var progress: Double?
+    @StateObject private var nativeLog = NanoMuseNativeRuntime.Log()
 
     var body: some View {
         NanoMusePage(title: "运行时") {
             NanoMuseCard {
+                Picker("安装目标", selection: $mode) {
+                    ForEach(Mode.allCases) { option in Text(option.title).tag(option) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                Text(mode.hint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+
+                NanoMuseRowDivider()
                 NanoMuseRowLabel(title: "清单", value: packages.isEmpty ? "未加载" : "\(packages.count) 个包",
                                  titleColor: .primary, chevron: false)
+                NanoMuseRowDivider()
+                NanoMuseRowLabel(title: "已安装",
+                                 value: "\(installed.values.filter { $0 }.count) / \(packages.count)",
+                                 titleColor: .primary, chevron: false)
+                if mode == .native {
+                    NanoMuseRowDivider()
+                    NanoMuseRowLabel(title: "安装位置",
+                                     value: NanoMuseNativeRuntime.rootDirectory.lastPathComponent,
+                                     titleColor: .primary, chevron: false)
+                }
                 NanoMuseRowDivider()
                 NanoMuseActionRow(title: "刷新清单", chevron: false) { Task { await load() } }
                 if let manifestError {
                     Text(manifestError)
                         .font(.footnote).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16).padding(.bottom, 10)
                 }
             }
-            NanoMuseCaption(text: "与 MT-Agent 同一份清单（含代理回退、SHA256 校验、probe 探测）。theos 214 MB 装着 iOS 编译/链接/打包工具链。")
+            NanoMuseCaption(text: "与 MT-Agent 同一份清单。原生包是 iOS 产物（codex 是 iphoneos-arm64.deb、theos 带 iPhoneOS16.5.sdk），装到 App 容器；Alpine 包才是 Linux 工具。")
 
             if !packages.isEmpty {
                 NanoMuseCard {
@@ -72,20 +123,29 @@ struct NanoMuseRuntimePage: View {
                 }
             }
 
-            if !logLines.isEmpty {
+            let displayLines = mode == .native ? nativeLog.lines : logLines
+            if !displayLines.isEmpty {
                 NanoMuseCard {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(logLines.enumerated()), id: \.offset) { _, line in
-                                Text(line)
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(line.hasPrefix("ERR") ? .red : .secondary)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(Array(displayLines.enumerated()), id: \.offset) { index, line in
+                                    Text(line)
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(line.hasPrefix("ERR") ? .red : .secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .id(index)
+                                }
+                            }
+                            .padding(12)
+                        }
+                        .frame(maxHeight: 240)
+                        .onChange(of: displayLines.count) { _ in
+                            if let last = displayLines.indices.last {
+                                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
                             }
                         }
-                        .padding(12)
                     }
-                    .frame(maxHeight: 220)
                 }
             }
         }
@@ -98,6 +158,9 @@ struct NanoMuseRuntimePage: View {
                 Text(package.displayName).font(.body).foregroundStyle(.primary)
                 Text("\(package.group) · \(package.sizeText) · \(package.capabilities.prefix(2).joined(separator: ", "))")
                     .font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                if let ios = package.minimumIOS {
+                    Text("最低 iOS \(ios)").font(.caption2).foregroundStyle(.tertiary)
+                }
             }
             Spacer(minLength: 8)
             if runningID == package.id {
@@ -106,7 +169,7 @@ struct NanoMuseRuntimePage: View {
                 Text("已安装").font(.footnote).foregroundStyle(NanoMuseTones.action)
             } else {
                 Button {
-                    install(package)
+                    Task { await install(package) }
                 } label: {
                     Text("安装").font(.subheadline.weight(.semibold)).foregroundStyle(NanoMuseTones.action)
                 }
@@ -124,39 +187,47 @@ struct NanoMuseRuntimePage: View {
             let manifest = try await NanoMuseRuntimeManifest.fetch()
             packages = manifest.packages
             proxies = manifest.proxies
-            let ids = manifest.packages.map(\.id)
-            let script = NanoMuseRuntimeManifest.statusScript(ids)
-            let output = await Task.detached(priority: .userInitiated) { () -> String in
-                let result = await NanoMuseCodex.runCommand(script, timeout: 60)
-                return result.output
-            }.value
-            installed = NanoMuseRuntimeManifest.parseStatus(output)
+            var state: [String: Bool] = [:]
+            switch mode {
+            case .native:
+                for package in manifest.packages {
+                    state[package.id] = NanoMuseNativeRuntime.isInstalled(package.id)
+                }
+            case .alpine:
+                let script = NanoMuseRuntimeManifest.statusScript(manifest.packages.map(\.id))
+                let (_, output) = await NanoMuseCodex.runCommand(script, timeout: 60)
+                state = NanoMuseRuntimeManifest.parseStatus(output)
+            }
+            installed = state
         } catch {
             manifestError = error.localizedDescription
         }
     }
 
-    private func install(_ package: NanoMuseRuntimeManifest.Package) {
+    private func install(_ package: NanoMuseRuntimeManifest.Package) async {
         runningID = package.id
         logLines.removeAll()
-        let script = NanoMuseRuntimeManifest.installScript(package, proxies: proxies)
-        NanoMuseCodex.runStreaming(script, timeout: 3600) { line in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            logLines.append(trimmed)
-            if logLines.count > 400 { logLines.removeFirst(logLines.count - 400) }
-            if trimmed.hasPrefix("STEP ") {
-                let lowered = trimmed.lowercased()
-                if lowered.contains("2/5") { progress = 0.1 }
-                if lowered.contains("3/5") { progress = 0.7 }
-                if lowered.contains("4/5") { progress = 0.85 }
-                if lowered.contains("5/5") { progress = 0.95 }
-                if lowered.hasSuffix("done") { progress = 1 }
-            }
-        } onFinish: { _ in
-            runningID = nil
-            Task { await load() }
+
+        switch mode {
+        case .native:
+            nativeLog.clear()
+            let ok = await NanoMuseNativeRuntime.install(package, proxies: proxies, log: nativeLog)
+            if !ok { await MainActor.run { nativeLog.add("ERR 安装未完成") } }
+        case .alpine:
+            let script = NanoMuseRuntimeManifest.installScript(package, proxies: proxies)
+            _ = await NanoMuseCodex.runStreamingAwait(script, timeout: 3600)
+            append("Alpine 安装流程结束")
         }
+
+        runningID = nil
+        await load()
+    }
+
+    private func append(_ line: String) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        logLines.append(trimmed)
+        if logLines.count > 400 { logLines.removeFirst(logLines.count - 400) }
     }
 }
 
@@ -335,6 +406,137 @@ struct NanoMuseWorktreePage: View {
             message = output
             busy = false
             refresh()
+        }
+    }
+}
+
+// MARK: - 签名工具（codex-sign）
+
+struct NanoMuseSignerPage: View {
+
+    enum Mode: String, CaseIterable, Identifiable {
+        case adhoc, entitled
+        var id: String { rawValue }
+        var title: String { self == .adhoc ? "ad-hoc" : "带权限" }
+    }
+
+    @State private var mode: Mode = .adhoc
+    @State private var target = ""
+    @State private var output = ""
+    @State private var busy = false
+
+    var body: some View {
+        NanoMusePage(title: "签名") {
+            NanoMuseCard {
+                Picker("模式", selection: $mode) {
+                    ForEach(Mode.allCases) { option in Text(option.title).tag(option) }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+
+                HStack(spacing: 12) {
+                    Text("目标").font(.body).frame(width: 56, alignment: .leading)
+                    TextField("App 容器内的二进制路径", text: $target)
+                        .font(.body.monospaced())
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+
+                NanoMuseRowDivider()
+                NanoMuseActionRow(title: busy ? "签名中…" : "执行签名", chevron: false) {
+                    sign()
+                }
+            }
+            NanoMuseCaption(text: mode == .entitled
+                            ? "带权限模式会用随包的 entitlements.plist（12 项巨魔权限）。"
+                            : "ad-hoc 模式只做最小签名，适合普通可执行文件。")
+
+            if !output.isEmpty {
+                NanoMuseCard {
+                    Text(output)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                }
+            }
+        }
+    }
+
+    private func sign() {
+        guard !target.isEmpty, !busy else { return }
+        busy = true
+        output = ""
+        let mode = self.mode
+        let path = target
+        let entitlements = Bundle.main.bundlePath + "/entitlements.plist"
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { () -> NanoMuseHelperRunner.Result in
+                var arguments: [String] = []
+                switch mode {
+                case .adhoc: arguments = ["--adhoc-only", path]
+                case .entitled: arguments = ["--entitlements", entitlements, path]
+                }
+                return NanoMuseHelperRunner.run("codex-sign", arguments: arguments, timeout: 120)
+            }.value
+            output = String(format: "退出码 %d · %.2fs\n\n", result.exitCode, result.duration) + result.output
+            busy = false
+        }
+    }
+}
+
+// MARK: - 原生 Shell（bash.real）
+
+struct NanoMuseNativeShellPage: View {
+    @State private var command = "ls -l /"
+    @State private var output = ""
+    @State private var busy = false
+
+    var body: some View {
+        NanoMusePage(title: "原生 Shell") {
+            NanoMuseCard {
+                HStack(spacing: 12) {
+                    Text("命令").font(.body).frame(width: 56, alignment: .leading)
+                    TextField("例如 ls -l 或 codex-sign --help", text: $command)
+                        .font(.body.monospaced())
+                        .multilineTextAlignment(.trailing)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                NanoMuseRowDivider()
+                NanoMuseActionRow(title: busy ? "执行中…" : "执行", chevron: false) { run() }
+            }
+            NanoMuseCaption(text: "在 iOS 本机跑 bash.real，PATH 已指向 App 内的 Helpers（cat/ls/grep/tar 等由 ca-filetool 提供）。")
+
+            if !output.isEmpty {
+                NanoMuseCard {
+                    ScrollView {
+                        Text(output)
+                            .font(.caption2.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
+                    .frame(maxHeight: 320)
+                }
+            }
+        }
+    }
+
+    private func run() {
+        guard !busy, !command.isEmpty else { return }
+        busy = true
+        output = ""
+        let cmd = command
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run("bash.real", arguments: ["-lc", cmd], timeout: 120)
+            }.value
+            output = String(format: "退出码 %d · %.2fs\n\n", result.exitCode, result.duration) + result.output
+            busy = false
         }
     }
 }

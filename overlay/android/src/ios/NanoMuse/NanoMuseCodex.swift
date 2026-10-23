@@ -204,6 +204,14 @@ public enum NanoMuseCodex {
         extraArgs: [String] = [],
         timeout: TimeInterval = 900
     ) async -> RunResult {
+
+        // 随包的兜底工作准则（设置里可关）
+        var effectivePrompt = prompt
+        if NanoMuseCodexSettings.useFallbackPrompt,
+           let guide = NanoMuseCodexAssets.fallbackPrompt(),
+           !guide.isEmpty {
+            effectivePrompt = guide + "\n\n---\n\n任务：\n" + prompt
+        }
         var env: [String] = []
         if let apiKey, !apiKey.isEmpty { env.append("export OPENAI_API_KEY=\(quote(apiKey))") }
         if let baseURL, !baseURL.isEmpty { env.append("export OPENAI_BASE_URL=\(quote(baseURL))") }
@@ -214,7 +222,7 @@ public enum NanoMuseCodex {
         let command = """
         mkdir -p \(quote(workspace))
         \(env.joined(separator: "\n"))
-        cd \(quote(workspace)) && codex \(args.joined(separator: " ")) \(quote(prompt)) 2>&1
+        cd \(quote(workspace)) && codex \(args.joined(separator: " ")) \(quote(effectivePrompt)) 2>&1
         """
 
         let (code, out) = await runCommand(command, timeout: timeout)

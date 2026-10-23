@@ -50,11 +50,27 @@ final class NanoMuseSubagentCenter: ObservableObject {
 
     // MARK: - 派活
 
+    /// 同时在跑的作业上限（超出直接拒绝，避免把设备拖死）
+    static let maxConcurrent = 2
+
     @discardableResult
     func dispatch(kind: NanoMuseSubagentKind,
                   prompt: String,
                   workspace: String = "/root/work",
                   timeout: TimeInterval = 1800) -> NanoMuseSubagentJob {
+        let running = jobs.filter { $0.status == "running" }.count
+        guard running < Self.maxConcurrent else {
+            let rejected = NanoMuseSubagentJob(
+                id: String(UUID().uuidString.prefix(8)).lowercased(),
+                kind: kind, prompt: prompt, workspace: workspace,
+                status: "failed", output: "并发上限 \(Self.maxConcurrent)，已有 \(running) 个作业在跑，请稍后再派。",
+                exitCode: -1, createdAt: Date(), finishedAt: Date(), delivered: true
+            )
+            jobs.insert(rejected, at: 0)
+            persist()
+            return rejected
+        }
+
         let job = NanoMuseSubagentJob(
             id: String(UUID().uuidString.prefix(8)).lowercased(),
             kind: kind,
@@ -142,6 +158,7 @@ final class NanoMuseSubagentCenter: ObservableObject {
     }
 
     private func notify(job: NanoMuseSubagentJob) {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         let content = UNMutableNotificationContent()
         content.title = job.kind == .codex ? "Codex 子代理完成" : "后台任务完成"
         content.body = String(job.prompt.prefix(60))
