@@ -160,7 +160,7 @@ enum NanoMuseRuntimeManifest {
         } > /etc/profile.d/nanocodex-runtimes.sh
         chmod 0644 /etc/profile.d/nanocodex-runtimes.sh
         echo "  PATH 片段：/etc/profile.d/nanocodex-runtimes.sh"
-__PROBE__
+        __PROBE__
         echo "$SHA" > "$DEST/.installed"
         echo "  已记录 .installed"
         echo "STEP done"
