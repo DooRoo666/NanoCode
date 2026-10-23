@@ -423,6 +423,11 @@ enum NanoMuseNativeRuntime {
 
         // ★ 关键：iSH 的 fakefs 用 meta.db 描述目录树，
         //   纯宿主写入的文件没有 meta 行，guest 里看不到 → 必须注册。
+        let copiedAttributes = try? FileManager.default
+            .attributesOfItem(atPath: stagingHost.appendingPathComponent(payloadName).path)
+        let payloadBytes = (copiedAttributes?[.size] as? Int) ?? 0
+        await log.add("  载荷大小：\(payloadBytes / 1048576) MB")
+
         RootfsManager.shared.registerSubtreeInMetaDB(hostRoot: stagingHost)
         await log.add("  已注册到 iSH meta.db（否则 guest 看不到）")
         await log.add("  载荷已放入 rootfs：\(stagingGuest)/\(payloadName)")
@@ -463,7 +468,7 @@ enum NanoMuseNativeRuntime {
                 await log.add("  Alpine 里 apk add zstd 失败（源/网络问题）")
             }
             try? FileManager.default.removeItem(at: stagingHost)
-            await log.add("ERR Alpine 解压未成功（\(sizeMB)）")
+            await log.add("ERR Alpine 解压未成功（载荷 \(payloadBytes / 1048576) MB，见上方 CD_FAIL / ls 输出）")
             return false
         }
 
