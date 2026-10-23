@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Checkout nanoMuse (submodules: iSH, proot)
+      - name: "Checkout nanoMuse (submodules: iSH, proot)"
         uses: actions/checkout@v4
         with:
           repository: nano-muse/nanoMuse
