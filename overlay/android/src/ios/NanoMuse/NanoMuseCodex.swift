@@ -431,6 +431,9 @@ public enum NanoMuseCodex {
             args.append(effectivePrompt)
 
             var env: [String: String] = [:]
+            let home = codexHome()
+            env["CODEX_HOME"] = home.path
+            syncAuthFromAlpine(into: home)
             if let apiKey, !apiKey.isEmpty { env["OPENAI_API_KEY"] = apiKey }
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
             if let model, !model.isEmpty { env["CODEX_MODEL"] = model }
@@ -478,6 +481,26 @@ public enum NanoMuseCodex {
         let (code, out) = await runCommand(command, timeout: timeout)
         return RunResult(exitCode: code, output: out, errorOutput: "",
                          duration: Date().timeIntervalSince(started))
+    }
+
+    /// 原生 codex 的 HOME：`Application Support/NanoCodex/codex-home`
+    static func codexHome() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let home = base.appendingPathComponent("NanoCodex/codex-home", isDirectory: true)
+        try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        return home
+    }
+
+    /// 把 iSH 里 `codex login` 写下的 auth.json 搬给原生 codex 用。
+    /// （两个世界的 HOME 不同，不搬的话原生端永远处于未登录状态。）
+    static func syncAuthFromAlpine(into home: URL) {
+        let target = home.appendingPathComponent("auth.json")
+        if FileManager.default.fileExists(atPath: target.path) { return }
+        let source = RootfsManager.shared.dataPath
+            .appendingPathComponent("root/.codex/auth.json")
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        try? FileManager.default.copyItem(at: source, to: target)
     }
 
     /// 单引号转义，避免 prompt 里的字符被 shell 解释

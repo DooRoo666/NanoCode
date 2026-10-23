@@ -539,12 +539,37 @@ enum NanoMuseNativeRuntime {
                                                           options: []) {
             for case let url as URL in enumerator where isMachO(url) { targets.append(url) }
         }
+        // 带 entitlements 签名：no-sandbox / platform-application / get-task-allow …
+        // 这样原生 codex 才有机会读到宿主数据；失败再退回 adhoc（至少能起进程）。
+        let entitlementPath = Bundle.main.bundlePath + "/entitlements.plist"
+        let hasEntitlements = FileManager.default.fileExists(atPath: entitlementPath)
+        if hasEntitlements {
+            await log.add("  用 entitlements.plist 签名（平台身份）")
+        } else {
+            await log.add("  未找到 entitlements.plist，退回 adhoc")
+        }
+
         var signed = 0
         for url in targets {
-            let result = await Task.detached(priority: .utility) {
-                NanoMuseHelperRunner.run("codex-sign", arguments: ["--adhoc-only", url.path], timeout: 60)
-            }.value
-            if result.exitCode == 0 { signed += 1 }
+            var ok = false
+            if hasEntitlements {
+                let entitled = await Task.detached(priority: .utility) {
+                    NanoMuseHelperRunner.run("codex-sign",
+                                             arguments: ["--entitlements", entitlementPath, url.path],
+                                             timeout: 60)
+                }.value
+                ok = entitled.exitCode == 0
+                if !ok {
+                    await log.add("    entitlements 签名失败（rc=\(entitled.exitCode)），试 adhoc")
+                }
+            }
+            if !ok {
+                let adhoc = await Task.detached(priority: .utility) {
+                    NanoMuseHelperRunner.run("codex-sign", arguments: ["--adhoc-only", url.path], timeout: 60)
+                }.value
+                ok = adhoc.exitCode == 0
+            }
+            if ok { signed += 1 }
         }
         return signed
     }
