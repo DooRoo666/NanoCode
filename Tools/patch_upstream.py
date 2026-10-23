@@ -42,6 +42,71 @@ SOURCE_NEW = '''            primaryLabel: AppLocalized("I have my own API key"),
 
 PATCHES = [("welcome page", WELCOME_OLD, WELCOME_NEW), ("source page", SOURCE_OLD, SOURCE_NEW)]
 
+# 本地自建端点（ollama / LM Studio / vLLM）对普通用户是噪音：它们要求在本机跑服务，
+# 而需求是"填 Key → 在线拉模型 → 选模型"。数据在 providers.json 里，改数据比改 Swift 安全。
+LOCAL_PROVIDER_IDS = ("ollama", "lm-studio", "vllm", "litellm", "llamacpp")
+
+CUSTOM_NAME = "自定义 API（Key + 地址）"
+CUSTOM_NOTE = "填入 API Key 与接口地址（通常以 /v1 结尾）。保存后可在模型页在线获取模型列表再挑选。"
+CUSTOM_NOTE_ZH = "填入 API Key 与接口地址（通常以 /v1 结尾）。保存后可在模型页在线拉取模型列表再挑选。"
+
+PROVIDERS_JSON = "NanoMuse/Resources/providers.json"
+
+
+def patch_providers_json(root: pathlib.Path, check_only: bool) -> int:
+    """去掉本地端点，把「自定义 API」提到第一位，并写清用法。"""
+    import json
+
+    path = root / PROVIDERS_JSON
+    if not path.exists():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 2
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    providers = data.get("providers")
+    if not isinstance(providers, list):
+        print("error: providers.json has no providers list", file=sys.stderr)
+        return 3
+
+    kept = [item for item in providers if item.get("id") not in LOCAL_PROVIDER_IDS]
+    removed = len(providers) - len(kept)
+
+    custom = next((item for item in kept if item.get("id") == "custom"), None)
+    if custom is None:
+        print("error: custom provider missing", file=sys.stderr)
+        return 3
+
+    custom["name"] = CUSTOM_NAME
+    custom["name_zh"] = CUSTOM_NAME
+    custom["note"] = CUSTOM_NOTE
+    custom["note_zh"] = CUSTOM_NOTE_ZH
+    custom["capabilities"] = custom.get("capabilities") or ["chat"]
+    custom["user_capabilities"] = True
+
+    reordered = [custom] + [item for item in kept if item.get("id") != "custom"]
+    data["providers"] = reordered
+
+    print(f"  providers.json: removed {removed} local endpoints, custom moved to first")
+    if check_only:
+        return 0
+
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    # 回读校验：本地端点确实没了、custom 确实第一个
+    verify = json.loads(path.read_text(encoding="utf-8"))
+    ids = [item.get("id") for item in verify["providers"]]
+    if any(bad in ids for bad in LOCAL_PROVIDER_IDS):
+        print("error: local providers survived the rewrite", file=sys.stderr)
+        return 4
+    if ids[0] != "custom":
+        print(f"error: custom is not first ({ids[0]})", file=sys.stderr)
+        return 4
+    print(f"  providers.json: {len(ids)} providers, first = custom")
+    return 0
+
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
@@ -69,11 +134,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         print("check: would apply cleanly" if text != original else "check: nothing to do")
-        return 0
+        rc = patch_providers_json(pathlib.Path(args.root), check_only=True)
+        return 0 if rc == 0 else rc
 
     if text != original:
         path.write_text(text, encoding="utf-8")
         print(f"wrote {path}")
+
+    rc = patch_providers_json(pathlib.Path(args.root), check_only=False)
+    if rc != 0:
+        return rc
     return 0
 
 
