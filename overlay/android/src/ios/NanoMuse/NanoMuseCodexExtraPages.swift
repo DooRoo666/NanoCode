@@ -127,8 +127,8 @@ struct NanoMuseRuntimePage: View {
             let ids = manifest.packages.map(\.id)
             let script = NanoMuseRuntimeManifest.statusScript(ids)
             let output = await Task.detached(priority: .userInitiated) { () -> String in
-                let result = ISHShellExecutor.executeCommandSync(script, timeout: 30, lineCallback: nil)
-                return result.output ?? ""
+                let result = await NanoMuseCodex.runCommand(script, timeout: 60)
+                return result.output
             }.value
             installed = NanoMuseRuntimeManifest.parseStatus(output)
         } catch {
@@ -304,7 +304,7 @@ struct NanoMuseWorktreePage: View {
         busy = true
         let ws = workspace
         Task {
-            let list = await Task.detached(priority: .userInitiated) { NanoMuseGitWorktree.list(workspace: ws) }.value
+            let list = await Task.detached(priority: .userInitiated) { await NanoMuseGitWorktree.list(workspace: ws) }.value
             entries = list
             busy = false
             if list.isEmpty { message = "这里不是 git 仓库，或还没有工作树。" }
@@ -317,7 +317,7 @@ struct NanoMuseWorktreePage: View {
         let ws = workspace, path = newPath, branch = newBranch
         Task {
             let output = await Task.detached(priority: .userInitiated) {
-                NanoMuseGitWorktree.add(workspace: ws, path: path, branch: branch)
+                await NanoMuseGitWorktree.add(workspace: ws, path: path, branch: branch)
             }.value
             message = output
             busy = false
@@ -330,7 +330,7 @@ struct NanoMuseWorktreePage: View {
         let ws = workspace
         Task {
             let output = await Task.detached(priority: .userInitiated) {
-                NanoMuseGitWorktree.remove(workspace: ws, path: entry.path)
+                await NanoMuseGitWorktree.remove(workspace: ws, path: entry.path)
             }.value
             message = output
             busy = false

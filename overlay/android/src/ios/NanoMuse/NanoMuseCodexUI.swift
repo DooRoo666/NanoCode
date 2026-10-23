@@ -550,14 +550,14 @@ struct NanoMuseCodexView: View {
     }
 
     private func refreshAll() async {
-        let codex = await Task.detached(priority: .userInitiated) { NanoMuseCodex.status() }.value
+        let codex = await Task.detached(priority: .userInitiated) { await NanoMuseCodex.status() }.value
         codexStatus = codex
 
         let specs = NanoMuseTools.catalog
         let statuses = await Task.detached(priority: .userInitiated) { () -> [String: String] in
             var result: [String: String] = [:]
             for spec in specs {
-                if let value = NanoMuseTools.status(of: spec) { result[spec.id] = value }
+                if let value = await NanoMuseTools.status(of: spec) { result[spec.id] = value }
             }
             return result
         }.value
@@ -619,7 +619,7 @@ struct NanoMuseCodexView: View {
         let credential = NanoMuseCodexSettings.resolved()
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                NanoMuseCodex.execute(
+                await NanoMuseCodex.execute(
                     prompt: prompt,
                     workspace: "/root/work",
                     apiKey: credential.apiKey,

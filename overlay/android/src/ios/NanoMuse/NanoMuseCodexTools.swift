@@ -150,16 +150,11 @@ enum NanoMuseTools {
         ]
     }
 
-    /// 同步查询某工具状态：有输出即已安装（输出就是版本行）
-    static func status(of spec: NanoMuseToolSpec) -> String? {
-        let result = ISHShellExecutor.executeCommandSync(
-            "\(spec.checkCommand) 2>/dev/null || true",
-            timeout: 30,
-            lineCallback: nil
-        )
-        let text = (result.output ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    /// 查询某工具状态：有输出即已安装（输出就是版本行）
+    static func status(of spec: NanoMuseToolSpec) async -> String? {
+        let (_, output) = await NanoMuseCodex.runCommand("\(spec.checkCommand) 2>/dev/null || true", timeout: 60)
+        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        // 只取第一行，避免把多行版本信息塞进一行
         return text.split(separator: "\n").first.map(String.init)
     }
 }

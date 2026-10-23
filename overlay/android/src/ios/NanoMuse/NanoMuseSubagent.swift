@@ -80,7 +80,7 @@ final class NanoMuseSubagentCenter: ObservableObject {
 
             switch kind {
             case .codex:
-                let result = NanoMuseCodex.execute(
+                let result = await NanoMuseCodex.execute(
                     prompt: prompt,
                     workspace: workspace,
                     apiKey: credential.apiKey,
@@ -91,13 +91,12 @@ final class NanoMuseSubagentCenter: ObservableObject {
                 output = result.output.isEmpty ? result.errorOutput : result.output
                 code = result.exitCode
             case .shell:
-                let result = ISHShellExecutor.executeCommandSync(
+                let result = await NanoMuseCodex.runCommand(
                     "cd \(workspace) 2>/dev/null; \(prompt) 2>&1",
-                    timeout: timeout,
-                    lineCallback: nil
+                    timeout: timeout
                 )
-                output = result.output ?? ""
-                code = result.exitCode
+                output = result.output
+                code = result.code
             }
 
             await MainActor.run {

@@ -16,17 +16,14 @@ enum NanoMuseGitWorktree {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    private static func run(_ command: String, timeout: TimeInterval = 60) -> String {
-        let result = ISHShellExecutor.executeCommandSync(command, timeout: timeout, lineCallback: nil)
-        let out = (result.output ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        let err = (result.errorOutput ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !out.isEmpty { return out }
-        return err
+    private static func run(_ command: String, timeout: TimeInterval = 60) async -> String {
+        let (_, output) = await NanoMuseCodex.runCommand(command, timeout: timeout)
+        return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// `git worktree list --porcelain` → 条目
-    static func list(workspace: String) -> [Entry] {
-        let raw = run("cd \(quote(workspace)) 2>/dev/null && git worktree list --porcelain 2>&1 || echo '__NOT_A_REPO__'")
+    static func list(workspace: String) async -> [Entry] {
+        let raw = await run("cd \(quote(workspace)) 2>/dev/null && git worktree list --porcelain 2>&1 || echo '__NOT_A_REPO__'")
         guard !raw.contains("__NOT_A_REPO__") else { return [] }
 
         var entries: [Entry] = []
@@ -56,9 +53,9 @@ enum NanoMuseGitWorktree {
         return entries
     }
 
-    static func add(workspace: String, path: String, branch: String) -> String {
+    static func add(workspace: String, path: String, branch: String) async -> String {
         let newBranch = branch.isEmpty ? "" : "-b \(quote(branch))"
-        return run("""
+        return await run("""
         cd \(quote(workspace)) || { echo "工作区不存在: \(workspace)"; exit 1; }
         mkdir -p $(dirname \(quote(path)))
         git worktree add \(newBranch) \(quote(path)) 2>&1
@@ -66,8 +63,8 @@ enum NanoMuseGitWorktree {
         """, timeout: 120)
     }
 
-    static func remove(workspace: String, path: String) -> String {
-        run("""
+    static func remove(workspace: String, path: String) async -> String {
+        await run("""
         cd \(quote(workspace)) || exit 1
         git worktree remove --force \(quote(path)) 2>&1
         git worktree prune 2>&1
@@ -75,7 +72,7 @@ enum NanoMuseGitWorktree {
         """, timeout: 120)
     }
 
-    static func prune(workspace: String) -> String {
-        run("cd \(quote(workspace)) && git worktree prune 2>&1 && git worktree list 2>&1")
+    static func prune(workspace: String) async -> String {
+        await run("cd \(quote(workspace)) && git worktree prune 2>&1 && git worktree list 2>&1")
     }
 }

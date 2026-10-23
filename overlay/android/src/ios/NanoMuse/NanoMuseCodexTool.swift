@@ -38,7 +38,7 @@ enum NanoMuseCodexTool {
     }
 
     static func execute(prompt: String, workspace: String, timeout: TimeInterval) async -> Outcome {
-        let status = NanoMuseCodex.status()
+        let status = await NanoMuseCodex.status()
         guard status.installed else {
             return Outcome(
                 exitCode: 127,
@@ -51,7 +51,7 @@ enum NanoMuseCodexTool {
         let model = NanoMuseCodexSettings.current.model
 
         let result = await Task.detached(priority: .userInitiated) {
-            NanoMuseCodex.execute(
+            await NanoMuseCodex.execute(
                 prompt: prompt,
                 workspace: workspace,
                 apiKey: credential.apiKey,

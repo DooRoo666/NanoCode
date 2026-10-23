@@ -30,22 +30,44 @@ public enum NanoMuseCodex {
     /// 安装目标路径（rootfs 内持久化）
     public static let binaryPath = "/usr/local/bin/codex"
 
-    // MARK: - 同步执行（工具调用用）
+    // MARK: - 统一执行入口（异步 + 流式，避免阻塞与死锁）
 
-    private static func run(
+    /// 用 iSH 的流式接口跑一段脚本，等待结束后一次性返回退出码与完整输出。
+    /// 为什么不用 `executeCommandSync`：上游各版本的参数不一致（有的带 timeout、
+    /// 有的 `output` 非可选），而且是同步阻塞 + 回调在主队列，从主线程调用会死锁。
+    public static func runCommand(
         _ command: String,
         timeout: TimeInterval = 900
-    ) -> (Int32, String, String, TimeInterval) {
-        // 桥接签名：executeCommandSync(_:timeout:lineCallback:)
-        let result = ISHShellExecutor.executeCommandSync(command, timeout: timeout, lineCallback: nil)
-        return (result.exitCode, result.output ?? "", result.errorOutput ?? "", result.duration)
+    ) async -> (code: Int32, output: String) {
+        await withCheckedContinuation { (continuation: CheckedContinuation<(Int32, String), Never>) in
+            let lock = NSLock()
+            var lines: [String] = []
+            var finished = false
+
+            _ = ISHShellExecutor.executeCommand(
+                command,
+                timeout: timeout,
+                lineCallback: { line, _ in
+                    lock.lock(); lines.append(line); lock.unlock()
+                },
+                completion: { result in
+                    lock.lock()
+                    guard !finished else { lock.unlock(); return }
+                    finished = true
+                    let collected = lines
+                    lock.unlock()
+                    continuation.resume(returning: (result?.exitCode ?? -1, collected.joined(separator: "\n")))
+                }
+            )
+        }
     }
 
-    public static func status() -> Status {
-        let (code, out, err, _) = run(
-            "command -v codex >/dev/null 2>&1 && codex --version 2>&1 || echo __MISSING__"
+    public static func status() async -> Status {
+        let (code, out) = await runCommand(
+            "command -v codex >/dev/null 2>&1 && codex --version 2>&1 || echo __MISSING__",
+            timeout: 60
         )
-        let merged = (out + err).trimmingCharacters(in: .whitespacesAndNewlines)
+        let merged = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if code != 0 || merged.contains("__MISSING__") || merged.isEmpty {
             return Status(installed: false, version: nil, rawOutput: merged)
         }
@@ -71,6 +93,16 @@ public enum NanoMuseCodex {
             completion: { result in onFinish((result?.exitCode ?? -1) == 0) }
         )
         return pid > 0
+    }
+
+    /// 跑一段脚本并等待结束（无逐行回调时用）
+    @discardableResult
+    public static func runStreamingAwait(_ script: String, timeout: TimeInterval = 1800) async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            _ = runStreaming(script, timeout: timeout, onLine: { _ in }, onFinish: { ok in
+                continuation.resume(returning: ok)
+            })
+        }
     }
 
     // MARK: - Codex 安装脚本（带完整回显）
@@ -156,17 +188,9 @@ public enum NanoMuseCodex {
     // MARK: - 同步安装（工具内部使用，无回显）
 
     @discardableResult
-    public static func install(force: Bool = false) -> Status {
-        if !force {
-            let current = status()
-            if current.installed { return current }
-        }
-        let (code, out, err, _) = run(installScript, timeout: 1800)
-        let merged = (out + err).trimmingCharacters(in: .whitespacesAndNewlines)
-        if code != 0 {
-            return Status(installed: false, version: nil, rawOutput: merged)
-        }
-        return status()
+    public static func install(force: Bool = false) async -> Status {
+        await runStreamingAwait(installScript, timeout: 1800)
+        return await status()
     }
 
     // MARK: - 运行
@@ -179,7 +203,7 @@ public enum NanoMuseCodex {
         model: String? = nil,
         extraArgs: [String] = [],
         timeout: TimeInterval = 900
-    ) -> RunResult {
+    ) async -> RunResult {
         var env: [String] = []
         if let apiKey, !apiKey.isEmpty { env.append("export OPENAI_API_KEY=\(quote(apiKey))") }
         if let baseURL, !baseURL.isEmpty { env.append("export OPENAI_BASE_URL=\(quote(baseURL))") }
@@ -193,8 +217,8 @@ public enum NanoMuseCodex {
         cd \(quote(workspace)) && codex \(args.joined(separator: " ")) \(quote(prompt)) 2>&1
         """
 
-        let (code, out, err, duration) = run(command, timeout: timeout)
-        return RunResult(exitCode: code, output: out, errorOutput: err, duration: duration)
+        let (code, out) = await runCommand(command, timeout: timeout)
+        return RunResult(exitCode: code, output: out, errorOutput: "", duration: 0)
     }
 
     /// 单引号转义，避免 prompt 里的字符被 shell 解释
@@ -204,7 +228,7 @@ public enum NanoMuseCodex {
 
     // MARK: - 卸载
 
-    public static func uninstall() {
-        _ = run("rm -f /usr/local/bin/codex")
+    public static func uninstall() async {
+        _ = await runCommand("rm -f /usr/local/bin/codex", timeout: 30)
     }
 }
