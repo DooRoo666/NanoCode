@@ -52,6 +52,9 @@ public enum NanoMuseCodex {
             } else {
                 parts.append("原生 未装")
             }
+            if let route = activeRoute {
+                parts.append("Agent 走 " + route)
+            }
             return parts.joined(separator: " · ")
         }
     }
