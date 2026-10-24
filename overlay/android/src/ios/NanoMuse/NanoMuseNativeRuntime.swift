@@ -209,6 +209,16 @@ enum NanoMuseNativeRuntime {
             await log.add("  无需重签（原签名可用）")
         }
 
+        // 准备可写的 HOME/bin，避免 codex 试图在只读目录建软链
+        let home = NanoMuseCodex.codexHome()
+        try? FileManager.default.createDirectory(at: home.appendingPathComponent("bin"),
+                                                 withIntermediateDirectories: true)
+        if let binary = codexBinary(in: destination) {
+            NanoMuseCodex.rememberNativeProbe(binaryPath: binary.path,
+                                              runs: runnable,
+                                              version: runnable ? "0.162.1" : nil)
+        }
+
         try? Data("\(package.sha256)\n".utf8).write(to: marker)
         await log.add("STEP done")
         await log.setPhase("完成")

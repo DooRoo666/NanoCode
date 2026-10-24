@@ -136,8 +136,9 @@ public enum NanoMuseCodex {
             return first
         }
 
-        // 原生：App 容器里找 codex 可执行
+        // 原生：App 容器里找 codex 可执行，并确认它真能跑
         let native = nativeBinary()
+        let nativeProbeResult = await nativeProbe()
 
         return Status(
             alpinePath: alpinePath,
@@ -146,7 +147,7 @@ public enum NanoMuseCodex {
             alpineVersion: alpineRuns ? alpineVersion : nil,
             nativePath: native?.path,
             nativeSize: native?.size ?? 0,
-            nativeRuns: false,
+            nativeRuns: nativeProbeResult.runs,
             rawOutput: out
         )
     }
@@ -160,6 +161,38 @@ public enum NanoMuseCodex {
                 String(parts[1]).trimmingCharacters(in: .whitespaces)
         }
         return result
+    }
+
+    /// 原生 codex 能否真的运行：跑一次 `--version`，结果按二进制路径缓存。
+    static func nativeProbe(force: Bool = false) async -> (runs: Bool, version: String?) {
+        guard let binary = nativeBinary() else { return (false, nil) }
+        let key = "nanocodex.nativeProbe"
+        if !force,
+           let saved = UserDefaults.standard.dictionary(forKey: key),
+           saved["path"] as? String == binary.path,
+           let runs = saved["runs"] as? Bool {
+            return (runs, saved["version"] as? String)
+        }
+        let result = await Task.detached(priority: .utility) {
+            NanoMuseHelperRunner.run(binary.path, arguments: ["--version"], timeout: 30)
+        }.value
+        let version = result.output
+            .split(separator: "\n")
+            .last
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        UserDefaults.standard.set(
+            ["path": binary.path, "runs": result.exitCode == 0, "version": version ?? ""],
+            forKey: key
+        )
+        return (result.exitCode == 0, version)
+    }
+
+    /// 记录一次已知的探测结果（安装流程结束时调用，省掉一次 235 MB 启动）
+    static func rememberNativeProbe(binaryPath: String, runs: Bool, version: String?) {
+        UserDefaults.standard.set(
+            ["path": binaryPath, "runs": runs, "version": version ?? ""],
+            forKey: "nanocodex.nativeProbe"
+        )
     }
 
     /// 在原生运行时目录里找 codex 可执行文件
@@ -480,6 +513,9 @@ public enum NanoMuseCodex {
             var env: [String: String] = [:]
             let home = codexHome()
             env["CODEX_HOME"] = home.path
+            env["HOME"] = home.path
+            try? FileManager.default.createDirectory(at: home.appendingPathComponent("bin"),
+                                                     withIntermediateDirectories: true)
             syncAuthFromAlpine(into: home)
             if let apiKey, !apiKey.isEmpty { env["OPENAI_API_KEY"] = apiKey }
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
