@@ -489,6 +489,28 @@ public enum NanoMuseCodex {
             lines.append("[4] codex 主程序 rc=\(probe.exitCode)  \(binary.size / 1048576) MB")
             lines.append("    " + probe.output.split(separator: "\n").prefix(3).joined(separator: " | "))
         }
+
+        // codex 的 shell 候选表按顺序取第一个「存在」的：
+        //   <jbroot>/bin/sh → <jbroot>/usr/bin/sh → /usr/bin/sh → … → /bin/bash → /usr/bin/bash
+        // iOS 上只有越狱残留的 /var/jb/bin/sh 存在，但它不可执行（os error 85）。
+        lines.append("[5] 宿主 shell 候选（codex 内部顺序）")
+        for candidate in ["/var/jb/bin/sh", "/var/jb/usr/bin/sh", "/usr/bin/sh",
+                          "/var/jb/bin/bash", "/var/jb/usr/bin/bash",
+                          "/bin/bash", "/usr/bin/bash"] {
+            let exists = FileManager.default.fileExists(atPath: candidate)
+            let executable = FileManager.default.isExecutableFile(atPath: candidate)
+            lines.append("    \(executable ? "可执行" : (exists ? "存在但不可执行" : "不存在"))  \(candidate)")
+        }
+        lines.append("    替代 shell = \(NanoMuseHelperRunner.path("bash.real"))")
+        lines.append("[6] /var/jb 可写性")
+        for dir in ["/var/jb", "/var/jb/bin", "/var/jb/usr/bin"] {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: dir, isDirectory: &isDir) {
+                lines.append("    \(isDir.boolValue ? "目录" : "文件")  可写=\(FileManager.default.isWritableFile(atPath: dir))  \(dir)")
+            } else {
+                lines.append("    不存在  \(dir)")
+            }
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -586,6 +608,13 @@ public enum NanoMuseCodex {
             // 这个 App 本身就是边界（TrollStore 带 no-sandbox / platform-application），
             // 所以显式关掉 codex 自己的沙箱与审批。已在该二进制里核对过此 flag 存在。
             var args = ["exec"]
+            // iOS 上没有 /bin/sh；codex 的 shell 候选表里第一个是 <jbroot>/bin/sh
+            // （越狱残留，一跑就 EBADEXEC / os error 85），所以让它走 argv 版 exec，
+            // 不再依赖 shell 可执行文件。
+            args.append(contentsOf: [
+                "-c", "experimental_use_unified_exec_tool=true",
+                "-c", "features.unified_exec=true",
+            ])
             // 有 baseURL + key 时显式声明 provider：不声明 codex 会打到 api.openai.com，
             // 在没有 ChatGPT 登录的情况下必然 401——这就是"链路通了但没 key"的现场。
             if let apiKey, let baseURL, !apiKey.isEmpty, !baseURL.isEmpty {
@@ -632,6 +661,11 @@ public enum NanoMuseCodex {
                 NanoMuseHelperRunner.helpersDirectory,
                 "/usr/bin", "/bin", "/usr/sbin", "/sbin",
             ].joined(separator: ":")
+            // 有些路径（PTY / 登录 shell）会直接读 $SHELL，也指向随包的 bash.real
+            if FileManager.default.isExecutableFile(atPath: bashPath) {
+                env["SHELL"] = bashPath
+            }
+            let shimReport = installHostShellShim()
             syncAuthFromAlpine(into: home)
             if let apiKey, !apiKey.isEmpty { env["OPENAI_API_KEY"] = apiKey }
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
@@ -685,7 +719,10 @@ public enum NanoMuseCodex {
                 .split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { !$0.contains("PATH aliases") }
                 .joined(separator: "\n")
-            return RunResult(exitCode: result.exitCode, output: cleaned,
+            let shimNote = shimReport.contains("已替换")
+                ? "shim: \(shimReport.replacingOccurrences(of: "\n", with: " | "))\n"
+                : ""
+            return RunResult(exitCode: result.exitCode, output: shimNote + cleaned,
                              errorOutput: "", duration: result.duration)
         }
 
@@ -744,6 +781,44 @@ public enum NanoMuseCodex {
     /// 单引号转义，避免 prompt 里的字符被 shell 解释
     private static func quote(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// 设备上若残留越狱的 `/var/jb/bin/sh`，codex 的候选表会优先选它，
+    /// 而它在 iOS 上不可执行（Bus error 10 / os error 85）。目录可写就把随包的
+    /// bash.real 顶上去；不可写就如实回报，交给 unified exec 那条路。
+    @discardableResult
+    static func installHostShellShim() -> String {
+        let bash = NanoMuseHelperRunner.path("bash.real")
+        guard FileManager.default.isExecutableFile(atPath: bash) else {
+            return "bash.real 缺失（构建时没注入 Helpers）"
+        }
+        var lines: [String] = []
+        for dir in ["/var/jb/bin", "/var/jb/usr/bin"] {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else {
+                lines.append("\(dir)：不存在")
+                continue
+            }
+            guard FileManager.default.isWritableFile(atPath: dir) else {
+                lines.append("\(dir)：不可写")
+                continue
+            }
+            for name in ["sh", "bash"] {
+                let target = dir + "/" + name
+                do {
+                    if FileManager.default.fileExists(atPath: target) {
+                        try FileManager.default.removeItem(atPath: target)
+                    }
+                    try FileManager.default.copyItem(atPath: bash, toPath: target)
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                           ofItemAtPath: target)
+                    lines.append("\(target)：已替换为 bash.real")
+                } catch {
+                    lines.append("\(target)：复制失败 \(error.localizedDescription)")
+                }
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// 输出像"这个网关不认当前 wire_api / 端点不存在"时返回 true，供换协议重试一次

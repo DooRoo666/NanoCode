@@ -135,6 +135,13 @@ struct NanoMuseCodexView: View {
                 checkProviders()
             }
             NanoMuseRowDivider()
+            NanoMuseActionRow(title: "修复宿主 shell（写 /var/jb/bin/sh）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                logLines.removeAll()
+                nativeLog.clear()
+                append(NanoMuseCodex.installHostShellShim())
+            }
+            NanoMuseRowDivider()
             NanoMuseActionRow(title: "协议：\(wireAPI == "responses" ? "responses" : "chat")（点切换）", chevron: false) {
                 let next = wireAPI == "responses" ? "chat" : "responses"
                 wireAPI = next
