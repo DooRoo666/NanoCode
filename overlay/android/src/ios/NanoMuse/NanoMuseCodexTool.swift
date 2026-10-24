@@ -46,9 +46,11 @@ enum NanoMuseCodexTool {
             )
         }
 
-        // 模型来源二选一：跟随 nanoMuse 的 provider，或用户自填的第三方
-        let credential = await MainActor.run { NanoMuseCodexSettings.resolved() }
-        let model = NanoMuseCodexSettings.current.model
+        // 模型来源二选一：跟随 nanoMuse 的 provider（逐个实测挑能鉴权的那家），
+        // 或用户自填的第三方。跟随模式下没填模型时，用该 provider 的第一个模型兜底。
+        let resolved = await NanoMuseCodexSettings.resolvedAsync()
+        let credential = (baseURL: resolved.baseURL, apiKey: resolved.apiKey)
+        let model = resolved.model
 
         let result = await Task.detached(priority: .userInitiated) {
             await NanoMuseCodex.execute(
@@ -82,6 +84,13 @@ enum NanoMuseCodexSettings {
         static let apiKey = "nanocodex.apiKey"
         static let baseURL = "nanocodex.baseURL"
         static let model = "nanocodex.model"
+        static let wireAPI = "nanocodex.wireAPI"
+    }
+
+    /// codex 的 wire_api：第三方网关多数是 `chat`，官方与部分网关是 `responses`
+    static var wireAPI: String {
+        get { UserDefaults.standard.string(forKey: Key.wireAPI) ?? "responses" }
+        set { UserDefaults.standard.set(newValue, forKey: Key.wireAPI) }
     }
 
     static var current: Values {
@@ -130,5 +139,38 @@ enum NanoMuseCodexSettings {
         case .custom:
             return (values.baseURL, values.apiKey, "自定义")
         }
+    }
+
+    /// 跟随模式的强化版：挨个实测 nanoMuse 的 provider，选真的能通过鉴权的那家，
+    /// 顺带带回它 `/models` 里的第一个模型（第三方网关通常没有 codex 的默认模型）。
+    @MainActor
+    static func resolvedAsync() async -> (baseURL: String, apiKey: String, label: String, model: String) {
+        let values = current
+        guard values.source == .followNano else {
+            return (values.baseURL, values.apiKey, "自定义", values.model)
+        }
+        let (chosen, _) = await NanoMuseCodexModels.resolveBest()
+        guard let chosen else {
+            return (values.baseURL, values.apiKey, "手填", values.model)
+        }
+        let model = values.model.isEmpty ? chosen.model : values.model
+        return (chosen.baseURL, chosen.apiKey, chosen.label, model)
+    }
+
+    /// 诊断：把每个 provider 的「有没有 key / 打得通不通」列出来（绝不打印 key 本身）
+    @MainActor
+    static func diagnoseProviders() async -> [String] {
+        let (chosen, probes) = await NanoMuseCodexModels.resolveBest()
+        var lines = ["===== nanoMuse 的 provider（逐个实测 /models）====="]
+        if probes.isEmpty { lines.append("  （没有启用中的 provider，或都缺 Base URL）") }
+        for probe in probes { lines.append("  " + probe.line) }
+        if let chosen {
+            lines.append("选中：\(chosen.label) · \(chosen.baseURL)")
+            lines.append("模型兜底：\(chosen.model.isEmpty ? "（空）" : chosen.model)")
+        } else {
+            lines.append("选中：无（没有哪家既有 key 又返回 200）")
+        }
+        lines.append("wire_api = \(wireAPI)（可在下方切换）")
+        return lines
     }
 }

@@ -585,7 +585,22 @@ public enum NanoMuseCodex {
             // 结果就是命令跑不动、写不了文件 → 看起来"能起但读不到系统数据"）。
             // 这个 App 本身就是边界（TrollStore 带 no-sandbox / platform-application），
             // 所以显式关掉 codex 自己的沙箱与审批。已在该二进制里核对过此 flag 存在。
-            var args = ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
+            var args = ["exec"]
+            // 有 baseURL + key 时显式声明 provider：不声明 codex 会打到 api.openai.com，
+            // 在没有 ChatGPT 登录的情况下必然 401——这就是"链路通了但没 key"的现场。
+            if let apiKey, let baseURL, !apiKey.isEmpty, !baseURL.isEmpty {
+                let provider = "nanomuse"
+                args.append(contentsOf: [
+                    "-c", "model_provider=\"\(provider)\"",
+                    "-c", "model_providers.\(provider).name=\"nanoMuse\"",
+                    "-c", "model_providers.\(provider).base_url=\"\(baseURL)\"",
+                    "-c", "model_providers.\(provider).env_key=\"OPENAI_API_KEY\"",
+                    "-c", "model_providers.\(provider).wire_api=\"\(NanoMuseCodexSettings.wireAPI)\"",
+                ])
+                if let model, !model.isEmpty { args.append(contentsOf: ["-m", model]) }
+            }
+            args.append("--dangerously-bypass-approvals-and-sandbox")
+            args.append("--skip-git-repo-check")
             args.append(contentsOf: extraArgs)
             args.append(effectivePrompt)
 
@@ -639,14 +654,32 @@ public enum NanoMuseCodex {
                     effectiveWorkspace = fallback.path
                 }
             }
-            let command = "cd \(quote(effectiveWorkspace)) 2>/dev/null || cd \(quote(codexHome().path)); "
-                + "exec \(quote(native.path)) " + args.map { quote($0) }.joined(separator: " ")
-            let result = await Task.detached(priority: .userInitiated) {
-                NanoMuseHelperRunner.run("bash.real",
-                                         arguments: ["-lc", command],
-                                         timeout: timeout,
-                                         extraEnvironment: env)
-            }.value
+            let runDir = effectiveWorkspace
+            let runEnv = env
+            func commandLine(_ arguments: [String]) -> String {
+                "cd \(quote(runDir)) 2>/dev/null || cd \(quote(codexHome().path)); "
+                    + "exec \(quote(native.path)) " + arguments.map { quote($0) }.joined(separator: " ")
+            }
+            func runOnce(_ arguments: [String]) async -> NanoMuseHelperRunner.Result {
+                let command = commandLine(arguments)
+                return await Task.detached(priority: .userInitiated) {
+                    NanoMuseHelperRunner.run("bash.real",
+                                             arguments: ["-lc", command],
+                                             timeout: timeout,
+                                             extraEnvironment: runEnv)
+                }.value
+            }
+
+            var result = await runOnce(args)
+            // 网关只支持 chat 而不支持 responses（或反过来）时，换一种 wire_api 再试一次
+            if result.exitCode != 0, Self.looksLikeWireMismatch(result.output) {
+                let other = NanoMuseCodexSettings.wireAPI == "responses" ? "chat" : "responses"
+                var retryArgs = args
+                if let index = retryArgs.firstIndex(where: { $0.contains("wire_api=") }) {
+                    retryArgs[index] = "model_providers.nanomuse.wire_api=\"\(other)\""
+                    result = await runOnce(retryArgs)
+                }
+            }
             // PATH 别名那条 WARNING 无害（退出码仍是 0），别让它混进 Agent 看到的结果里
             let cleaned = result.output
                 .split(separator: "\n", omittingEmptySubsequences: false)
@@ -711,6 +744,16 @@ public enum NanoMuseCodex {
     /// 单引号转义，避免 prompt 里的字符被 shell 解释
     private static func quote(_ text: String) -> String {
         "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// 输出像"这个网关不认当前 wire_api / 端点不存在"时返回 true，供换协议重试一次
+    private static func looksLikeWireMismatch(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        for needle in ["wire_api", "unknown variant", "unsupported", "not supported",
+                       "404", "405", "not found"] {
+            if lowered.contains(needle) { return true }
+        }
+        return false
     }
 
     // MARK: - 卸载

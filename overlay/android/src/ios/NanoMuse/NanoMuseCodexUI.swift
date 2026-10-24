@@ -32,6 +32,7 @@ struct NanoMuseCodexView: View {
     @State private var useFallbackPrompt = NanoMuseCodexSettings.useFallbackPrompt
     @State private var fetchingModels = false
     @State private var modelError: String?
+    @State private var wireAPI = NanoMuseCodexSettings.wireAPI
 
     private var busy: Bool { runningTool != nil }
 
@@ -127,6 +128,18 @@ struct NanoMuseCodexView: View {
                 guard !busy, !nativeRunning else { return }
                 codexStatus = nil
                 Task { await refreshAll() }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "路由与密钥检查（读 nano 设置）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                checkProviders()
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "协议：\(wireAPI == "responses" ? "responses" : "chat")（点切换）", chevron: false) {
+                let next = wireAPI == "responses" ? "chat" : "responses"
+                wireAPI = next
+                NanoMuseCodexSettings.wireAPI = next
+                append("wire_api 已切换为 \(next)")
             }
             NanoMuseRowDivider()
             NanoMuseActionRow(title: "自检（打诊断信息）", chevron: false) {
@@ -633,6 +646,18 @@ struct NanoMuseCodexView: View {
         }
     }
 
+    /// 路由与密钥：逐个实测 nanoMuse 的 provider，只报「有没有 key / 通不通」，不打印 key
+    private func checkProviders() {
+        logLines.removeAll()
+        nativeLog.clear()
+        append("===== 读取 nanoMuse 的模型设置 =====")
+        Task {
+            let lines = await NanoMuseCodexSettings.diagnoseProviders()
+            for line in lines { append(line) }
+            append("（key 只留在 App 进程内，不会落到任何外部进程或配置文件）")
+        }
+    }
+
     private func refreshInherited() {
         let inherited = NanoMuseCodexModels.inherited()
         inheritedLabel = inherited?.label
@@ -745,15 +770,16 @@ struct NanoMuseCodexView: View {
     private func run() {
         output = ""
         persist()
-        let credential = NanoMuseCodexSettings.resolved()
         Task {
+            let resolved = await NanoMuseCodexSettings.resolvedAsync()
+            let model = resolved.model.isEmpty ? selectedModel : resolved.model
             let result = await Task.detached(priority: .userInitiated) {
                 await NanoMuseCodex.execute(
                     prompt: prompt,
                     workspace: "/root/work",
-                    apiKey: credential.apiKey,
-                    baseURL: credential.baseURL,
-                    model: selectedModel,
+                    apiKey: resolved.apiKey,
+                    baseURL: resolved.baseURL,
+                    model: model,
                     timeout: 900
                 )
             }.value

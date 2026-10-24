@@ -31,6 +31,87 @@ enum NanoMuseCodexModels {
         let label: String
         let baseURL: String
         let apiKey: String
+        /// 该 provider 的 /models 里第一个模型（codex 的默认模型第三方网关多半没有）
+        var model: String = ""
+        var instanceID: String = ""
+    }
+
+    /// 单个 provider 的实测结果（密钥内容不落地，只记长度）
+    struct Probe: Sendable {
+        let label: String
+        let instanceID: String
+        let baseURL: String
+        let hasKey: Bool
+        let keyLength: Int
+        /// 0 = 没探（没 key / 地址空），-1 = 网络异常
+        let httpStatus: Int
+        let models: [String]
+
+        var line: String {
+            var parts = ["「\(label)」", baseURL]
+            parts.append(hasKey ? "key \(keyLength) 字符" : "无 key")
+            if httpStatus == 200 { parts.append("HTTP 200 · \(models.count) 个模型") }
+            else if httpStatus == 0 { parts.append("未探测") }
+            else if httpStatus == -1 { parts.append("网络异常") }
+            else { parts.append("HTTP \(httpStatus)") }
+            return parts.joined(separator: " · ")
+        }
+    }
+
+    /// 逐个启用中的 provider 实测 `/models`，选第一个「有 key 且 200」的。
+    /// 这样不用猜"列表第一个是不是用户那家"，也不用把 key 暴露给任何外部进程。
+    @MainActor
+    static func resolveBest() async -> (chosen: Inherited?, probes: [Probe]) {
+        let store = ProviderConfigStore.shared
+        let cloudID = NanoMuseCloud.instance?.id
+        let candidates = store.instances.filter { candidate in
+            candidate.isEnabled && candidate.id != cloudID
+        }
+
+        var probes: [Probe] = []
+        var fallback: Inherited?
+        for instance in candidates {
+            let key = ProviderKeychainHelper.loadAPIKey(instanceId: instance.id) ?? ""
+            let base = instance.effectiveCustomBaseURL ?? fallbackBase(for: instance)
+            guard !base.isEmpty else { continue }
+
+            if key.isEmpty {
+                probes.append(Probe(label: instance.label, instanceID: instance.id, baseURL: base,
+                                    hasKey: false, keyLength: 0, httpStatus: 0, models: []))
+                continue
+            }
+
+            let (status, models) = await probeModels(baseURL: base, apiKey: key)
+            probes.append(Probe(label: instance.label, instanceID: instance.id, baseURL: base,
+                                hasKey: true, keyLength: key.count, httpStatus: status, models: models))
+
+            let candidate = Inherited(label: instance.label, baseURL: base, apiKey: key,
+                                      model: models.first ?? "", instanceID: instance.id)
+            if status == 200 {
+                return (candidate, probes)
+            }
+            if fallback == nil { fallback = candidate }
+        }
+        return (fallback, probes)
+    }
+
+    /// 打一次 `<base>/models`，拿到 HTTP 码与模型列表
+    static func probeModels(baseURL: String, apiKey: String) async -> (Int, [String]) {
+        let root = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        let candidate = root.hasSuffix("/v1") ? root + "/models" : root + "/v1/models"
+        guard let url = URL(string: candidate) else { return (0, []) }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let object = (try? JSONSerialization.jsonObject(with: data)) ?? [:]
+            return (status, identifiers(from: object))
+        } catch {
+            return (-1, [])
+        }
     }
 
     // MARK: - 复用 nanoMuse 的 provider
