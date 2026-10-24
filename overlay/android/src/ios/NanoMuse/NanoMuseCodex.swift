@@ -621,6 +621,18 @@ public enum NanoMuseCodex {
         let pipeExec = await run("[P8] 管道：ls / | head -1", "bash.real",
                                  ["-c", "ls / | head -1"], keep: 2)
 
+        // P9：这是 codex 真正的执行路径 —— 随包的 nsh（forkless shell）自己跑管道。
+        // 如果这条 rc=0，说明 codex 的 shell 工具已经有实际能力了。
+        let nshPath = NanoMuseHelperRunner.path("nsh")
+        let nshExec: (Int32, String)
+        if FileManager.default.isExecutableFile(atPath: nshPath) {
+            nshExec = await run("[P9] nsh 管道（codex 实际路径）：ls / | head -3", "nsh",
+                                ["-c", "ls / | head -3"], keep: 4)
+        } else {
+            lines.append("[P9] 包里没有 nsh（forkless shell 未编译进来）")
+            nshExec = (-1, "")
+        }
+
         lines.append(forkFromMain())
         lines.append("---- 判读 ----")
 
@@ -651,6 +663,13 @@ public enum NanoMuseCodex {
                 lines.append("  · P7「ls /」也死 → bash 连简单命令都要 fork，codex 的 shell 完全不可用。")
             }
             lines.append("  → 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
+            if nshExec.0 == 0 {
+                lines.append("  ✅ P9 通过：随包 nsh 用 posix_spawn 跑通了管道（rc=0）。")
+                lines.append("     所以 codex 的 shell 现在能执行：单命令、管道、重定向、; && ||、cd、export、通配符。")
+                lines.append("     不能执行的只剩需要复制进程的语法：$( )、( )、& 后台。")
+            } else if FileManager.default.isExecutableFile(atPath: nshPath) {
+                lines.append("  ⚠️ P9 失败（rc=\(nshExec.0)）：nsh 在，但管道没跑通，把上面 P9 的输出发我。")
+            }
         } else if forkDead, !(execWorks && spawnWorks) {
             lines.append("结论：fork 死（P2/P3/P5 Bus error），且探针 exec/spawn 未取到 rc=0")
             lines.append("  （P1 rc=\(execReplace.0)，P6 rc=\(spawnSystem.0)）")
