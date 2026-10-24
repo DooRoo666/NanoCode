@@ -24,7 +24,7 @@ RUNTIME_ENT="$ROOT/Tools/entitlements-runtime.plist"
 # extended-virtual-addressing 会把进程变成 48 位扩展地址布局，fork() 无法克隆 →
 # 子进程取指就 SIGBUS（Bus error 10）。bash.real 的 ( exit 1 )、codex 起 shell 都会崩。
 # 任何人再把它加回签名模板，这里直接让构建失败。
-if grep -q "extended-virtual-addressing" "$MAIN_ENT" "$RUNTIME_ENT"; then
+if grep -q "<key>com.apple.developer.kernel.extended-virtual-addressing</key>" "$MAIN_ENT" "$RUNTIME_ENT"; then
   echo "error: entitlements 里仍有 extended-virtual-addressing —— 它会让 fork() 全部 SIGBUS" >&2
   echo "       把它从 Tools/entitlements-app.plist 与 Tools/entitlements-runtime.plist 里删掉。" >&2
   exit 1
