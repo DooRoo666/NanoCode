@@ -50,7 +50,7 @@ enum NanoMuseSubagentTool {
     static func dispatch(prompt: String, workspace: String, timeout: TimeInterval) async -> String {
         let status = await NanoMuseCodex.status()
         guard status.installed else {
-            return "Codex 尚未安装，子代理无法启动。请到 设置 → Codex 安装（或先用 shell_execute 装）。"
+            return "Codex 尚未安装，子代理无法启动。到 设置 → Codex 点「原生安装（推荐）」，装完点「重新检测」。"
         }
         let job = await MainActor.run {
             NanoMuseSubagentCenter.shared.dispatch(kind: .codex,

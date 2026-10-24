@@ -600,8 +600,24 @@ public enum NanoMuseCodex {
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
             if let model, !model.isEmpty { env["CODEX_MODEL"] = model }
 
-            // iOS 没有 posix_spawn 的 chdir，用随包的 bash 包一层设置工作目录
-            let command = "cd \(quote(workspace)) 2>/dev/null || mkdir -p \(quote(workspace)) && cd \(quote(workspace)); "
+            // iOS 没有 posix_spawn 的 chdir，用随包的 bash 包一层设置工作目录。
+            // `/root/work` 这类 Linux 路径在 iOS 上建不出来，落到容器里的 work 目录。
+            var effectiveWorkspace = workspace
+            if !FileManager.default.fileExists(atPath: effectiveWorkspace) {
+                var created = true
+                do {
+                    try FileManager.default.createDirectory(atPath: effectiveWorkspace,
+                                                            withIntermediateDirectories: true)
+                } catch {
+                    created = false
+                }
+                if !created {
+                    let fallback = codexHome().appendingPathComponent("work", isDirectory: true)
+                    try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+                    effectiveWorkspace = fallback.path
+                }
+            }
+            let command = "cd \(quote(effectiveWorkspace)) 2>/dev/null || cd \(quote(codexHome().path)); "
                 + "exec \(quote(native.path)) " + args.map { quote($0) }.joined(separator: " ")
             let result = await Task.detached(priority: .userInitiated) {
                 NanoMuseHelperRunner.run("bash.real",
@@ -622,10 +638,10 @@ public enum NanoMuseCodex {
         guard current.alpinePath != nil else {
             return RunResult(exitCode: 127,
                              output: """
-                             没有可用的 codex：
-                               · Alpine 未安装（点「Alpine 安装」）
-                               · 原生未安装（点「原生安装（推荐）」）
-                             装完再点「自检」确认真能用起来。
+                             没有可用的 codex（App 容器与 Alpine 里都没找到可执行文件）：
+                               · 点「原生安装（推荐）」把 iphoneos-arm64 包解到 App 容器
+                               · 或点「Alpine 安装」装 Linux 版
+                             装完点「重新检测」确认状态。
                              """,
                              errorOutput: "", duration: 0)
         }

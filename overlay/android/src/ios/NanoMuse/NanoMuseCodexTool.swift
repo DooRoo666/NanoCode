@@ -42,7 +42,7 @@ enum NanoMuseCodexTool {
         guard status.installed else {
             return Outcome(
                 exitCode: 127,
-                text: "Codex 尚未安装。请到 设置 → Codex 点「安装 / 更新 Codex」（约 100 MB），或先用 shell_execute 安装。"
+                text: "Codex 尚未安装。到 设置 → Codex 点「原生安装（推荐）」（原版 iphoneos-arm64 包，约 95 MB），装完点「重新检测」。"
             )
         }
 
