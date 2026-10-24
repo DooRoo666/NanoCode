@@ -520,7 +520,7 @@ struct NanoMuseSignerPage: View {
                 }
             }
             NanoMuseCaption(text: mode == .entitled
-                            ? "带权限模式用随包的 entitlements.plist（11 项巨魔权限；已去掉 extended-virtual-addressing，那条会让 fork 全部 SIGBUS）。"
+                            ? "带权限模式用随包的 entitlements.plist（11 项巨魔权限；已移除那条会让 fork 崩溃的地址空间权限）。"
                             : "ad-hoc 模式只做最小签名，适合普通可执行文件。")
 
             if !output.isEmpty {

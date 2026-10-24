@@ -3,11 +3,11 @@
 <!--
   给「运行时二进制」（codex / Theos 工具等）用的签名模板。
 
-  和 MT-Agent 原版唯一的差别：**去掉了 com.apple.developer.kernel.extended-virtual-addressing**。
-  那条权限会把进程变成 48 位扩展地址布局，内核在 fork() 复制地址空间时无法克隆，
-  子进程一取指就 SIGBUS（Bus error 10）——bash.real 的 `( exit 1 )` 崩、codex 起 shell 崩，
-  都是这条引起的。App 本身用不到 48 位地址空间（arm64 默认 39 位 = 512 GB 足够），
-  所以去掉它没有代价，换回来的是 fork 可用。
+  比 MT-Agent 原版少了一条：48 位扩展地址空间权限。
+  它会把进程变成扩展地址布局，内核 fork() 无法克隆，子进程取指即 SIGBUS
+  （bash.real 的 `( exit 1 )` 崩、codex 起 shell 崩）。arm64 默认 39 位 = 512 GB，
+  够用，去掉没有代价。
+  构建细节与守卫见 Tools/make_tipa.sh。
 -->
 <plist version="1.0">
 <dict>
