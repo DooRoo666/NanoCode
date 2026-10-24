@@ -15,6 +15,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 LDID="${LDID:-$(command -v ldid || true)}"
 [ -n "$LDID" ] || { echo "error: ldid not found (brew install ldid)" >&2; exit 1; }
+OTOOL="${OTOOL:-$(command -v otool || true)}"
 APP_NAME="$(basename "$APP" .app)"
 MAIN_ENT="$ROOT/Tools/entitlements-app.plist"
 RUNTIME_ENT="$ROOT/Tools/entitlements-runtime.plist"
@@ -80,25 +81,37 @@ fi
 cp "$RUNTIME_ENT" "$TARGET/entitlements.plist"
 echo "   entitlements.plist ← Tools/entitlements-runtime.plist（已去掉 extended-virtual-addressing）"
 
-echo "== 1/4 nested Mach-O: Helpers 用完整权限，其余 ad-hoc =="
-# 关键：Helpers/ 里的 codex-sign / ca-filetool / bash.real 自带
-# platform-application + com.apple.private.security.no-sandbox 等权限。
-# 用裸 ldid -S 重签会把它们全部剥掉，导致运行时被内核 SIGKILL(137)，
-# 进而没人能给 codex 签名 → posix_spawn EBADEXEC。
-# 所以 Helpers 一律用 -S"$MAIN_ENT" 签。
+echo "== 1/4 nested Mach-O: Helpers 保留原签名，其余 ad-hoc =="
+# Helpers 里的 bash.real / codex-sign / ca-filetool 是 MT-Agent 发布时已经签好的
+# （ldid + 完整巨魔权限，含 extended-virtual-addressing）。
+# 我们重签会改写 CodeDirectory / requirements / 特殊槽位，虽然形态看起来一样，
+# 但会让「fork 出来的子进程」在 CS 校验上失败 → Bus error 10。
+# 既然原版单独安装能跑，就原样保留它们的签名，不再动。
+# 只有确实没签名的（例如我们自己编的）才补签。
 count=0
 helperCount=0
+keepCount=0
+has_signature() {
+  [ -n "$OTOOL" ] || return 1
+  "$OTOOL" -l "$1" 2>/dev/null | grep -q LC_CODE_SIGNATURE
+}
 while IFS= read -r -d '' f; do
   if is_macho "$f"; then
     case "$f" in
       "$TARGET/$APP_NAME") continue ;;                    # 主程序最后签
       *.appex/*) continue ;;                              # 扩展单独签
-      */Helpers/*) "$LDID" -S"$MAIN_ENT" "$f"; helperCount=$((helperCount+1)) ;;
+      */Helpers/*)
+        if has_signature "$f"; then
+          keepCount=$((keepCount+1))
+        else
+          "$LDID" -S"$MAIN_ENT" "$f"; helperCount=$((helperCount+1))
+        fi
+        ;;
       *) "$LDID" -S "$f"; count=$((count+1)) ;;
     esac
   fi
 done < <(find "$TARGET" -type f -print0)
-echo "   signed $count nested binaries, $helperCount helpers with entitlements"
+echo "   signed $count nested binaries, $helperCount helpers re-signed with entitlements, $keepCount helpers kept original signature"
 
 echo "== 2/4 extensions =="
 shopt -s nullglob
