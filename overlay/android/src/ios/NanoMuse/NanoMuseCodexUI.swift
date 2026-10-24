@@ -70,7 +70,7 @@ struct NanoMuseCodexView: View {
 
             // ② 再安装：状态 → 回显 → 工具 → 原生工具 → 资源 → 更多
             statusCard
-            NanoMuseCaption(text: "Codex 面板 \(NanoMuseCodex.buildTag) · 状态只报实际装上的那条路线，缺的另一条不算错误。")
+            NanoMuseCaption(text: "Codex 面板 \(NanoMuseCodex.buildTag) · 执行优先走 iSH（宿主 fork() 被 iOS 禁用，宿主 codex 的 shell 不可能工作）；状态只报实际装上的那条路线。")
             logCard
             NanoMuseCaption(text: "推荐在「运行时」里用原生方式安装 codex（原版 iphoneos-arm64 包，跑在 iOS 上）；这里的 Alpine 方式适合纯 Linux 工具。")
 

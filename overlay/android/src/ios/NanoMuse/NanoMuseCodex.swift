@@ -103,7 +103,7 @@ public enum NanoMuseCodex {
         "https://github.com/openai/codex/releases/latest/download/codex-aarch64-unknown-linux-musl.tar.gz"
 
     /// 面板构建标记：装完新包先看这一行，确认跑的是新代码
-    public static let buildTag = "r5"
+    public static let buildTag = "r7"
 
     /// Alpine 内的安装路径
     public static let binaryPath = "/usr/local/bin/codex"
@@ -549,19 +549,24 @@ public enum NanoMuseCodex {
         ].joined(separator: "\n")
     }
 
-    /// 探针用哪个系统二进制：挑第一个真实存在、且参数能跑通的。
-    /// 这台设备实测 /bin/ls 不存在、/bin/ps 存在，所以候选里 ps 排第一。
-    private static func probeBinary() -> (path: String, args: [String])? {
+    /// 探针用哪个系统二进制：真跑一遍、要求 rc==0 才算数。
+    /// 只按「文件存在」挑会挑到 /bin/ps 这种参数不兼容的目标（rc=1、无输出），
+    /// 让 P1/P6 看起来像失败，反而污染判读。
+    private static func pickProbeTarget() async -> (path: String, args: [String])? {
         let candidates: [(String, [String])] = [
-            ("/bin/ps", ["-o", "pid="]),
-            ("/usr/bin/ps", ["-o", "pid="]),
             ("/bin/ps", []),
+            ("/bin/ps", ["-A"]),
+            ("/bin/ps", ["-o", "pid"]),
             ("/bin/cat", ["/dev/null"]),
             ("/usr/bin/head", ["-n", "1", "/dev/null"]),
-            ("/bin/echo", ["ok"])
+            ("/bin/echo", ["diag-ok"]),
+            ("/usr/bin/true", [])
         ]
         for (path, args) in candidates where FileManager.default.isExecutableFile(atPath: path) {
-            return (path, args)
+            let probe = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run(path, arguments: args, timeout: 15)
+            }.value
+            if probe.exitCode == 0 { return (path, args) }
         }
         return nil
     }
@@ -586,12 +591,13 @@ public enum NanoMuseCodex {
 
         let bashProbe = await run("[P0] bash 起来（纯 builtin，无 fork）", "bash.real", ["-c", "echo exec-ok"])
 
-        // 这台机器上不一定有 /bin/ls：先挑一个真实存在的
-        let probe = probeBinary()
+        // 这台机器上不一定有 /bin/ls，而且 ps 的参数各家不同：真跑一遍挑 rc==0 的
+        let probe = await pickProbeTarget()
         var execReplace: (Int32, String) = (-1, "")
         var forkExec: (Int32, String) = (-1, "")
         var spawnSystem: (Int32, String) = (-1, "")
         if let target = probe {
+            lines.append("[目标] 探针二进制 = \(target.path) \(target.args.joined(separator: " "))（rc=0 已验）")
             let quoted = ([target.path] + target.args).joined(separator: " ")
             execReplace = await run("[P1] exec 替换 \(target.path)（不 fork）", "bash.real",
                                     ["-c", "exec \(quoted)"])
@@ -600,7 +606,7 @@ public enum NanoMuseCodex {
             spawnSystem = await run("[P6] Minis 直接 posix_spawn \(target.path)", target.path,
                                     target.args, keep: 3)
         } else {
-            lines.append("[P1/P3/P6] 这台设备没有可用的系统二进制（ps / ls / cat / head / echo 都不在）")
+            lines.append("[目标] 这台设备没有能跑通的系统二进制（ps / cat / head / echo / true 都失败）")
         }
 
         let forkSub = await run("[P2] 纯 fork：( exit 0 )", "bash.real", ["-c", "( exit 0 )"])
@@ -611,14 +617,11 @@ public enum NanoMuseCodex {
         lines.append("---- 判读 ----")
 
         func busError(_ r: (Int32, String)) -> Bool { r.0 == 138 || r.1.contains("Bus error") }
-        func unusable(_ r: (Int32, String)) -> Bool {
-            r.1.contains("No such file or directory") || r.1.contains("Permission denied")
-                || r.1.contains("cannot execute") || r.0 == -1
-        }
 
         let bashAlive = bashProbe.1.contains("exec-ok")
-        let execWorks = probe != nil && (execReplace.0 == 0 || !unusable(execReplace))
-        let spawnWorks = probe != nil && (spawnSystem.0 == 0 || !unusable(spawnSystem))
+        // 探针目标已用 rc==0 验过，所以这里要求严格相等：rc=0 才算 exec/spawn 通
+        let execWorks = execReplace.0 == 0
+        let spawnWorks = spawnSystem.0 == 0
         let forkDead = busError(forkSub) || busError(forkBg) || busError(forkExec)
         let substDead = !forkSubst.1.contains("got-x")
 
@@ -626,20 +629,21 @@ public enum NanoMuseCodex {
             lines.append("结论：bash 自身没起来（P0 没有 exec-ok）→ 先查签名段 / Helpers 注入。")
         } else if forkDead, execWorks, spawnWorks {
             lines.append("结论（已定性，结论不再是待查项）：")
-            lines.append("  · exec（P1）与 posix_spawn（P6）都通 → 创建进程的能力本身没坏；")
+            lines.append("  · exec 替换（P1 rc=0）与 posix_spawn（P6 rc=0）都通 → 创建进程的能力本身没坏；")
             lines.append("  · 纯 fork（P2）、fork+exec（P3）、后台 fork（P5）的子进程全部 Bus error 10"
                          + (substDead ? "，命令替换 $( ) 也静默返回空" : "") + "；")
             lines.append("  · 根因：iOS SDK 把 fork() 标为 unavailable（编译器原文见上），")
             lines.append("    宿主侧任何「复制自己再执行」的工具（codex shell / Theos / make）都不可能工作；")
             lines.append("  · 与签名段、entitlement、arm64e、jbroot 残留均无关，这是 iOS 的设计边界。")
             lines.append("  → 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
-        } else if forkDead, !execWorks {
-            lines.append("结论：fork 死、系统二进制 exec 也不通（\(probe?.path ?? "无可用二进制")）")
+        } else if forkDead, !(execWorks && spawnWorks) {
+            lines.append("结论：fork 死（P2/P3/P5 Bus error），且探针 exec/spawn 未取到 rc=0")
+            lines.append("  （P1 rc=\(execReplace.0)，P6 rc=\(spawnSystem.0)）")
             lines.append("  → 先 TrollStore「Refresh App Registrations」，重启后再跑一次。")
         } else if !forkDead {
             lines.append("结论：这次 fork 竟然通了（与 SDK 标记相反）——把上面全部 rc 原样发我。")
         } else {
-            lines.append("结论：混合状态（fork 死但 exec 证据不足），把上面全部 rc 原样发我。")
+            lines.append("结论：混合状态，把上面全部 rc 原样发我。")
         }
         return lines.joined(separator: "\n")
     }
@@ -729,13 +733,13 @@ public enum NanoMuseCodex {
 
         // 宿主这条路依赖「创建进程」；有些设备 fork 本身就是坏的
         // （连 `( exit 1 )` 都 SIGBUS），原生 codex 一定起不来。
-        // 这时直接走 iSH 里的 codex —— 它跑在 Linux 用户态里，不需要宿主 fork。
-        let preferAlpine = (current.alpinePath != nil) && current.alpineRuns
-            && (current.nativePath == nil || !current.nativeRuns)
-
-        // 原生二进制：只要 Alpine 那条「装了但跑不起来」，就直接用原生。
-        // 否则会出现：Alpine 的 musl 程序一跑就崩，codex_exec 却一直往那条路走。
+        // 更狠的是：iOS SDK 直接把 fork() 标成 unavailable（编译器原文
+        // "'fork()' is unavailable: Please use threads or posix_spawn*()"），
+        // 所以宿主 codex 的 shell 工具在任何 iOS 上都不成立。
+        // 因此只要 iSH 里的 codex 可用，就一律先走 iSH —— 它在 Linux 用户态里，
+        // 不需要宿主 fork。
         let alpineUsable = (current.alpinePath != nil) && current.alpineRuns
+        let preferAlpine = alpineUsable
         if !preferAlpine, !alpineUsable, let native = nativeBinary() {
             // `exec` 默认是 read-only 沙箱（在 macOS 上走 seatbelt，iOS 没有这层，
             // 结果就是命令跑不动、写不了文件 → 看起来"能起但读不到系统数据"）。
