@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// 设置 › Codex —— 与 nanoMuse 其它设置页同一套观感：
 /// `NanoMusePage` 画布 + `NanoMuseCard` 卡片 + `NanoMuseRowLabel`/`NanoMuseActionRow` 行
@@ -13,6 +14,7 @@ struct NanoMuseCodexView: View {
     @State private var phaseText = ""
     @State private var progress: Double?
     @State private var logLines: [String] = []
+    @State private var copied = false
     @State private var output = ""
     @State private var prompt = ""
 
@@ -327,6 +329,18 @@ struct NanoMuseCodexView: View {
                 Spacer()
                 if !displayLines.isEmpty {
                     Button {
+                        UIPasteboard.general.string = displayLines.joined(separator: "\n")
+                        copied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { copied = false }
+                    } label: {
+                        Text(copied ? "已复制" : "复制")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(copied ? Color.secondary : NanoMuseTones.action)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        nativeLog.clear()
                         logLines.removeAll()
                     } label: {
                         Text("清空")

@@ -549,6 +549,23 @@ public enum NanoMuseCodex {
         ].joined(separator: "\n")
     }
 
+    /// 探针用哪个系统二进制：挑第一个真实存在、且参数能跑通的。
+    /// 这台设备实测 /bin/ls 不存在、/bin/ps 存在，所以候选里 ps 排第一。
+    private static func probeBinary() -> (path: String, args: [String])? {
+        let candidates: [(String, [String])] = [
+            ("/bin/ps", ["-o", "pid="]),
+            ("/usr/bin/ps", ["-o", "pid="]),
+            ("/bin/ps", []),
+            ("/bin/cat", ["/dev/null"]),
+            ("/usr/bin/head", ["-n", "1", "/dev/null"]),
+            ("/bin/echo", ["ok"])
+        ]
+        for (path, args) in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return (path, args)
+        }
+        return nil
+    }
+
     /// 阶梯测试：把 exec / 纯 fork / fork+exec / 命令替换 / 后台 fork / 直接 spawn 系统二进制
     /// 逐层分开跑，一次定性"创建进程坏在哪一层"。
     public static func processLadder() async -> String {
@@ -567,49 +584,64 @@ public enum NanoMuseCodex {
             return (result.exitCode, result.output)
         }
 
-        _ = await run("[P0] bash 起来（纯 builtin，无 fork）", "bash.real", ["-c", "echo exec-ok; uname -a"])
-        let execReplace = await run("[P1] exec 替换（不 fork）", "bash.real", ["-c", "exec /bin/ls /"])
+        let bashProbe = await run("[P0] bash 起来（纯 builtin，无 fork）", "bash.real", ["-c", "echo exec-ok"])
+
+        // 这台机器上不一定有 /bin/ls：先挑一个真实存在的
+        let probe = probeBinary()
+        var execReplace: (Int32, String) = (-1, "")
+        var forkExec: (Int32, String) = (-1, "")
+        var spawnSystem: (Int32, String) = (-1, "")
+        if let target = probe {
+            let quoted = ([target.path] + target.args).joined(separator: " ")
+            execReplace = await run("[P1] exec 替换 \(target.path)（不 fork）", "bash.real",
+                                    ["-c", "exec \(quoted)"])
+            forkExec = await run("[P3] fork+exec \(target.path)", "bash.real",
+                                 ["-c", "\(quoted) >/dev/null 2>&1; echo ok-$?"])
+            spawnSystem = await run("[P6] Minis 直接 posix_spawn \(target.path)", target.path,
+                                    target.args, keep: 3)
+        } else {
+            lines.append("[P1/P3/P6] 这台设备没有可用的系统二进制（ps / ls / cat / head / echo 都不在）")
+        }
+
         let forkSub = await run("[P2] 纯 fork：( exit 0 )", "bash.real", ["-c", "( exit 0 )"])
-        _ = await run("[P3] fork+exec（外部命令）", "bash.real", ["-c", "/bin/ls / >/dev/null 2>&1; echo ok-$?"])
         let forkSubst = await run("[P4] 命令替换 $( )", "bash.real", ["-c", "v=$(echo x); echo got-$v"])
         let forkBg = await run("[P5] 后台 fork：true & wait", "bash.real", ["-c", "true & wait"])
 
-        // /bin/ls 在不同 iOS 上可能不存在，找一个真的在的系统二进制再直接 spawn
-        var systemLS: String? = nil
-        for candidate in ["/bin/ls", "/usr/bin/ls", "/bin/ps", "/usr/bin/du"] {
-            if FileManager.default.isExecutableFile(atPath: candidate) { systemLS = candidate; break }
-        }
-        let spawnSystem: (Int32, String)
-        if let ls = systemLS {
-            spawnSystem = await run("[P6] Minis 直接 posix_spawn \(ls)", ls, ["-1", "/"], keep: 3)
-        } else {
-            lines.append("[P6] 找不到可用的系统二进制（/bin/ls /usr/bin/ls /bin/ps /usr/bin/du 都不存在）")
-            spawnSystem = (-1, "")
-        }
-
         lines.append(forkFromMain())
         lines.append("---- 判读 ----")
-        let forkBroken = (forkSub.0 != 0 || forkSub.0 == 138 || forkSub.1.contains("Bus error"))
-            && (forkSubst.0 != 0 || forkBg.0 != 0)
-        if bashAliveUnknown(lines) {
-            lines.append("结论：bash 自身没起来，先查签名 / Helpers 注入（P0 的 rc 是 -1）。")
-        } else if spawnSystem.0 != 0, execReplace.0 != 0 {
-            lines.append("结论：连 exec 都失败 → AMFI / 信任缓存异常，先 TrollStore"+"「Refresh App Registrations」再试。")
-        } else if forkBroken {
-            lines.append("结论（已定性，不再是待查项）：")
-            lines.append("  · exec（P1）与 posix_spawn（P6）正常 → 创建进程的能力本身没坏；")
-            lines.append("  · 纯 fork（P2/P4/P5）必死 → iOS SDK 把 fork() 标为 unavailable，")
-            lines.append("    宿主侧任何「复制自己再执行」的工具（codex shell / Theos / make）都跑不起来；")
-            lines.append("  · 这与签名段、entitlement、arm64e、jbroot 残留都无关，是 iOS 的设计。")
-            lines.append("  · 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
+
+        func busError(_ r: (Int32, String)) -> Bool { r.0 == 138 || r.1.contains("Bus error") }
+        func unusable(_ r: (Int32, String)) -> Bool {
+            r.1.contains("No such file or directory") || r.1.contains("Permission denied")
+                || r.1.contains("cannot execute") || r.0 == -1
+        }
+
+        let bashAlive = bashProbe.1.contains("exec-ok")
+        let execWorks = probe != nil && (execReplace.0 == 0 || !unusable(execReplace))
+        let spawnWorks = probe != nil && (spawnSystem.0 == 0 || !unusable(spawnSystem))
+        let forkDead = busError(forkSub) || busError(forkBg) || busError(forkExec)
+        let substDead = !forkSubst.1.contains("got-x")
+
+        if !bashAlive {
+            lines.append("结论：bash 自身没起来（P0 没有 exec-ok）→ 先查签名段 / Helpers 注入。")
+        } else if forkDead, execWorks, spawnWorks {
+            lines.append("结论（已定性，结论不再是待查项）：")
+            lines.append("  · exec（P1）与 posix_spawn（P6）都通 → 创建进程的能力本身没坏；")
+            lines.append("  · 纯 fork（P2）、fork+exec（P3）、后台 fork（P5）的子进程全部 Bus error 10"
+                         + (substDead ? "，命令替换 $( ) 也静默返回空" : "") + "；")
+            lines.append("  · 根因：iOS SDK 把 fork() 标为 unavailable（编译器原文见上），")
+            lines.append("    宿主侧任何「复制自己再执行」的工具（codex shell / Theos / make）都不可能工作；")
+            lines.append("  · 与签名段、entitlement、arm64e、jbroot 残留均无关，这是 iOS 的设计边界。")
+            lines.append("  → 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
+        } else if forkDead, !execWorks {
+            lines.append("结论：fork 死、系统二进制 exec 也不通（\(probe?.path ?? "无可用二进制")）")
+            lines.append("  → 先 TrollStore「Refresh App Registrations」，重启后再跑一次。")
+        } else if !forkDead {
+            lines.append("结论：这次 fork 竟然通了（与 SDK 标记相反）——把上面全部 rc 原样发我。")
         } else {
-            lines.append("结论：这次 fork 竟然测通了（与 SDK 标记相反），把上面全部 rc 原样发我。")
+            lines.append("结论：混合状态（fork 死但 exec 证据不足），把上面全部 rc 原样发我。")
         }
         return lines.joined(separator: "\n")
-    }
-
-    private static func bashAliveUnknown(_ lines: [String]) -> Bool {
-        lines.contains { $0.hasPrefix("[P0]") && $0.contains("rc=-1") }
     }
 
     /// 由 Minis 本体 posix_spawn 出来的 bash：能看到宿主 App 的沙盒边界。
