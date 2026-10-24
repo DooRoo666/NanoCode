@@ -104,66 +104,29 @@ public enum NanoMuseCodex {
         }
     }
 
-    // MARK: - 状态（分位置判定，不依赖 --version 的退出码）
+    // MARK: - 原生二进制与探测
 
-    public static func status() async -> Status {
-        let script = #"""
-        echo "PATH=$PATH"
-        if [ -x /usr/local/bin/codex ]; then
-          echo "ALPINE_PATH=/usr/local/bin/codex"
-          echo "ALPINE_SIZE=$(stat -c %s /usr/local/bin/codex 2>/dev/null || echo 0)"
-          ALPINE_HEAD=$(od -An -tx1 -N4 /usr/local/bin/codex 2>/dev/null | tr -d ' \n')
-          echo "ALPINE_HEAD=$ALPINE_HEAD"
-          VER_OUT=$(/usr/local/bin/codex --version 2>&1); VER_RC=$?
-          echo "ALPINE_VER_RC=$VER_RC"
-          echo "ALPINE_VER=$(printf '%s' "$VER_OUT" | head -1)"
-        else
-          echo "ALPINE_PATH="
-          echo "ALPINE_SIZE=0"
-          echo "ALPINE_VER_RC=127"
-        fi
-        echo "PROBE_END"
-        """#
-
-        let (_, out) = await runCommand(script, timeout: 60)
-        let fields = parseKeyValues(out)
-
-        let alpinePath = fields["ALPINE_PATH"].flatMap { $0.isEmpty ? nil : $0 }
-        let alpineSize = Int(fields["ALPINE_SIZE"] ?? "0") ?? 0
-        let alpineRuns = (Int(fields["ALPINE_VER_RC"] ?? "127") ?? 127) == 0
-        let alpineVersion = fields["ALPINE_VER"].flatMap { value -> String? in
-            guard let first = value.split(separator: " ").last.map(String.init), !value.isEmpty else { return nil }
-            return first
+    /// 在 runtimes 目录里找 codex 主程序。
+    /// **不依赖 .installed 标记**：标记在容器迁移/中断安装时会丢，
+    /// 会造成"能跑却显示未装"。以内容为准。
+    static func nativeBinary() -> (path: String, size: Int)? {
+        let root = NanoMuseNativeRuntime.rootDirectory
+        guard let enumerator = FileManager.default.enumerator(at: root,
+                                                             includingPropertiesForKeys: [.fileSizeKey],
+                                                             options: []) else { return nil }
+        var candidates: [(path: String, size: Int)] = []
+        for case let url as URL in enumerator {
+            guard url.lastPathComponent == "codex" else { continue }
+            guard FileManager.default.isExecutableFile(atPath: url.path) else { continue }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            candidates.append((url.path, size))
         }
-
-        // 原生：App 容器里找 codex 可执行，并确认它真能跑
-        let native = nativeBinary()
-        let nativeProbeResult = await nativeProbe()
-
-        return Status(
-            alpinePath: alpinePath,
-            alpineSize: alpineSize,
-            alpineRuns: alpineRuns,
-            alpineVersion: alpineRuns ? alpineVersion : nil,
-            nativePath: native?.path,
-            nativeSize: native?.size ?? 0,
-            nativeRuns: nativeProbeResult.runs,
-            rawOutput: out
-        )
+        // deb 里 usr/bin/codex 是 52 KB 启动器（硬编码 /var/jb），
+        // 真二进制在 usr/libexec/codex/codex（235 MB）→ 取最大的
+        return candidates.max(by: { $0.size < $1.size })
     }
 
-    private static func parseKeyValues(_ text: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for line in text.split(separator: "\n") {
-            let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            result[String(parts[0]).trimmingCharacters(in: .whitespaces)] =
-                String(parts[1]).trimmingCharacters(in: .whitespaces)
-        }
-        return result
-    }
-
-    /// 同一二进制（路径+大小+修改时间）只探测一次；签名后 mtime 变化会自动重探。
+    /// 探测缓存戳：路径 + 大小 + 修改时间（签名后 mtime 变化会自动重探）
     private static func stamp(for path: String, size: Int) -> String {
         let attrs = try? FileManager.default.attributesOfItem(atPath: path)
         let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
@@ -195,7 +158,7 @@ public enum NanoMuseCodex {
         return (result.exitCode == 0, version)
     }
 
-    /// 安装流程结束时写入已知结果（避免再启动一次 235 MB 进程）
+    /// 安装流程结束时写入已知结果，省掉一次 235 MB 进程启动
     static func rememberNativeProbe(binaryPath: String, runs: Bool, version: String?) {
         let size = (try? FileManager.default.attributesOfItem(atPath: binaryPath)[.size] as? Int) ?? 0
         UserDefaults.standard.set(
@@ -206,7 +169,7 @@ public enum NanoMuseCodex {
         )
     }
 
-    // MARK: - 状态（分位置判定，不依赖 --version 的退出码）
+    // MARK: - 状态（分位置判定）
 
     public static func status() async -> Status {
         let script = #"""
@@ -214,8 +177,6 @@ public enum NanoMuseCodex {
         if [ -x /usr/local/bin/codex ]; then
           echo "ALPINE_PATH=/usr/local/bin/codex"
           echo "ALPINE_SIZE=$(stat -c %s /usr/local/bin/codex 2>/dev/null || echo 0)"
-          ALPINE_HEAD=$(od -An -tx1 -N4 /usr/local/bin/codex 2>/dev/null | tr -d ' \n')
-          echo "ALPINE_HEAD=$ALPINE_HEAD"
           VER_OUT=$(/usr/local/bin/codex --version 2>&1); VER_RC=$?
           echo "ALPINE_VER_RC=$VER_RC"
           echo "ALPINE_VER=$(printf '%s' "$VER_OUT" | head -1)"
@@ -234,13 +195,12 @@ public enum NanoMuseCodex {
         let alpineSize = Int(fields["ALPINE_SIZE"] ?? "0") ?? 0
         let alpineRuns = (Int(fields["ALPINE_VER_RC"] ?? "127") ?? 127) == 0
         let alpineVersion = fields["ALPINE_VER"].flatMap { value -> String? in
-            guard let first = value.split(separator: " ").last.map(String.init), !value.isEmpty else { return nil }
-            return first
+            guard let last = value.split(separator: " ").last.map(String.init), !value.isEmpty else { return nil }
+            return last
         }
 
-        // 原生：App 容器里找 codex 可执行，并确认它真能跑
         let native = nativeBinary()
-        let nativeProbeResult = await nativeProbe()
+        let probe = await nativeProbe()
 
         return Status(
             alpinePath: alpinePath,
@@ -249,7 +209,7 @@ public enum NanoMuseCodex {
             alpineVersion: alpineRuns ? alpineVersion : nil,
             nativePath: native?.path,
             nativeSize: native?.size ?? 0,
-            nativeRuns: nativeProbeResult.runs,
+            nativeRuns: probe.runs,
             rawOutput: out
         )
     }
@@ -263,116 +223,6 @@ public enum NanoMuseCodex {
                 String(parts[1]).trimmingCharacters(in: .whitespaces)
         }
         return result
-    }
-
-    /// 原生 codex 能否真的运行：跑一次 `--version`，结果按二进制路径缓存。
-    static func nativeProbe(force: Bool = false) async -> (runs: Bool, version: String?) {
-        guard let binary = nativeBinary() else { return (false, nil) }
-        let key = "nanocodex.nativeProbe"
-        if !force,
-           let saved = UserDefaults.standard.dictionary(forKey: key),
-           saved["path"] as? String == binary.path,
-           let runs = saved["runs"] as? Bool {
-            return (runs, saved["version"] as? String)
-        }
-        let result = await Task.detached(priority: .utility) {
-            NanoMuseHelperRunner.run(binary.path, arguments: ["--version"], timeout: 30)
-        }.value
-        let version = result.output
-            .split(separator: "\n")
-            .last
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        UserDefaults.standard.set(
-            ["path": binary.path, "runs": result.exitCode == 0, "version": version ?? ""],
-            forKey: key
-        )
-        return (result.exitCode == 0, version)
-    }
-
-    /// 记录一次已知的探测结果（安装流程结束时调用，省掉一次 235 MB 启动）
-    static func rememberNativeProbe(binaryPath: String, runs: Bool, version: String?) {
-        UserDefaults.standard.set(
-            ["path": binaryPath, "runs": runs, "version": version ?? ""],
-            forKey: "nanocodex.nativeProbe"
-        )
-    }
-
-    /// 在原生运行时目录里找 codex 主程序。
-    /// **不依赖 .installed 标记**：只要 runtimes 目录里存在可执行的 codex 就算装了
-    /// （标记文件在容器迁移/中断安装时会丢，导致"能跑却显示未装"）。
-    static func nativeBinary() -> (path: String, size: Int)? {
-        let root = NanoMuseNativeRuntime.rootDirectory
-        guard let enumerator = FileManager.default.enumerator(at: root,
-                                                             includingPropertiesForKeys: [.fileSizeKey],
-                                                             options: []) else { return nil }
-        var candidates: [(path: String, size: Int)] = []
-        for case let url as URL in enumerator {
-            guard url.lastPathComponent == "codex" else { continue }
-            guard FileManager.default.isExecutableFile(atPath: url.path) else { continue }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            candidates.append((url.path, size))
-        }
-        // deb 里 usr/bin/codex 只是 52 KB 启动器（硬编码 /var/jb），
-        // 真二进制在 usr/libexec/codex/codex（235 MB）→ 取最大的
-        return candidates.max(by: { $0.size < $1.size })
-    }
-
-    /// 原生 codex 能否真的运行：跑一次 `--version`，结果按二进制路径缓存。
-    static func nativeProbe(force: Bool = false) async -> (runs: Bool, version: String?) {
-        guard let binary = nativeBinary() else { return (false, nil) }
-        let key = "nanocodex.nativeProbe"
-        if !force,
-           let saved = UserDefaults.standard.dictionary(forKey: key),
-           saved["path"] as? String == binary.path,
-           let runs = saved["runs"] as? Bool {
-            return (runs, saved["version"] as? String)
-        }
-        let result = await Task.detached(priority: .utility) {
-            NanoMuseHelperRunner.run(binary.path, arguments: ["--version"], timeout: 30)
-        }.value
-        let version = result.output
-            .split(separator: "\n")
-            .last
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-        UserDefaults.standard.set(
-            ["path": binary.path, "runs": result.exitCode == 0, "version": version ?? ""],
-            forKey: key
-        )
-        return (result.exitCode == 0, version)
-    }
-
-    /// 记录一次已知的探测结果（安装流程结束时调用，省掉一次 235 MB 启动）
-    static func rememberNativeProbe(binaryPath: String, runs: Bool, version: String?) {
-        UserDefaults.standard.set(
-            ["path": binaryPath, "runs": runs, "version": version ?? ""],
-            forKey: "nanocodex.nativeProbe"
-        )
-    }
-
-    /// 在原生运行时目录里找 codex 可执行文件
-    static func nativeBinary() -> (path: String, size: Int)? {
-        var roots: [URL] = []
-        if NanoMuseNativeRuntime.isInstalled("codex") {
-            roots.append(NanoMuseNativeRuntime.directory(for: "codex"))
-        }
-        for root in roots {
-            guard let enumerator = FileManager.default.enumerator(at: root,
-                                                                 includingPropertiesForKeys: [.fileSizeKey],
-                                                                 options: []) else { continue }
-            // deb 里有 usr/bin/codex（52 KB 启动器，硬编码 /var/jb 路径）
-            // 和 usr/libexec/codex/codex（235 MB 真二进制）→ 取最大的
-            var candidates: [(path: String, size: Int)] = []
-            for case let url as URL in enumerator {
-                guard url.lastPathComponent == "codex" else { continue }
-                guard FileManager.default.isExecutableFile(atPath: url.path) else { continue }
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                candidates.append((url.path, size))
-            }
-            if let best = candidates.max(by: { $0.size < $1.size }) {
-                return (best.path, best.size)
-            }
-        }
-        return nil
     }
 
     // MARK: - 流式执行
