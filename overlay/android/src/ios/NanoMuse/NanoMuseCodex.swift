@@ -535,30 +535,18 @@ public enum NanoMuseCodex {
 
     // MARK: - 进程阶梯（exec / fork 分离定性）
 
-    /// 主进程（Minis，实测 arm64e）里直接 fork 一次：如果连 App 自己的 fork 都死，
-    /// 就是设备/系统层的 fork 门禁，与随包二进制无关。
-    /// 子进程立刻 _exit，不产生任何副作用。
+    /// iOS SDK 直接把 fork() 标成不可用，原文：
+    ///   error: 'fork()' is unavailable: Please use threads or posix_spawn*()
+    /// 所以「宿主 fork 坏掉」不是签名 / entitlement / arm64e / jbroot 的问题，
+    /// 而是 iOS 不提供这条 API（Apple 只给 posix_spawn）。
+    /// 这条探针不再调用 fork（那样编译不过），改为把这个事实直接打印成结论。
     public static func forkFromMain() -> String {
-        let pid = Darwin.fork()
-        if pid == 0 { _exit(0) }
-        if pid < 0 {
-            return "Minis fork() 直接失败：errno=\(errno) \(String(cString: strerror(errno)))"
-        }
-        var status: Int32 = 0
-        waitpid(pid, &status, 0)
-        let signal = status & 0x7f
-        if signal == 0 {
-            return "Minis fork 成功，子进程正常退出 rc=\((status >> 8) & 0xff)"
-        }
-        let name: String
-        switch signal {
-        case 10: name = "SIGBUS（Bus error 10）"
-        case 9: name = "SIGKILL"
-        case 5: name = "SIGTRAP"
-        case 11: name = "SIGSEGV"
-        default: name = "signal \(signal)"
-        }
-        return "Minis fork 子进程被信号终止：\(name)"
+        return [
+            "宿主 fork()：iOS SDK 标记为 unavailable",
+            "  编译器原文：'fork()' is unavailable: Please use threads or posix_spawn*()",
+            "  → 需要 fork 的宿主工具链（codex 的 shell / Theos / make）在 iOS 上不可能工作；",
+            "  → iSH 能用是因为它在用户态模拟 fork，不碰内核 fork。"
+        ].joined(separator: "\n")
     }
 
     /// 阶梯测试：把 exec / 纯 fork / fork+exec / 命令替换 / 后台 fork / 直接 spawn 系统二进制
@@ -582,7 +570,7 @@ public enum NanoMuseCodex {
         _ = await run("[P0] bash 起来（纯 builtin，无 fork）", "bash.real", ["-c", "echo exec-ok; uname -a"])
         let execReplace = await run("[P1] exec 替换（不 fork）", "bash.real", ["-c", "exec /bin/ls /"])
         let forkSub = await run("[P2] 纯 fork：( exit 0 )", "bash.real", ["-c", "( exit 0 )"])
-        let forkExec = await run("[P3] fork+exec（外部命令）", "bash.real", ["-c", "/bin/ls / >/dev/null 2>&1; echo ok-$?"])
+        _ = await run("[P3] fork+exec（外部命令）", "bash.real", ["-c", "/bin/ls / >/dev/null 2>&1; echo ok-$?"])
         let forkSubst = await run("[P4] 命令替换 $( )", "bash.real", ["-c", "v=$(echo x); echo got-$v"])
         let forkBg = await run("[P5] 后台 fork：true & wait", "bash.real", ["-c", "true & wait"])
 
@@ -604,20 +592,18 @@ public enum NanoMuseCodex {
         let forkBroken = (forkSub.0 != 0 || forkSub.0 == 138 || forkSub.1.contains("Bus error"))
             && (forkSubst.0 != 0 || forkBg.0 != 0)
         if bashAliveUnknown(lines) {
-            lines.append("bash 自身都没起来：先看签名/Helpers 注入。")
-        } else if forkBroken, spawnSystem.0 == 0 {
-            lines.append("结论：exec 与 posix_spawn 都正常，**fork 在系统/内核层被拒**（fork 子进程 SIGBUS）。")
-            lines.append("我们的签名段已验证干净（11 项、无扩展地址权限），这不再是包的问题：")
-            lines.append("· 换原版 MT-Agent tipa 在同一台设备跑同样的 ( exit 0 ) 对照")
-            lines.append("· TrollStore 里『Refresh App Registrations』后重试")
-            lines.append("· 都不行 = 这台设备的 fork 门禁，App 侧无解：读用 host_fs，执行走 iSH")
-        } else if forkBroken, spawnSystem.0 != 0 {
-            lines.append("结论：fork 坏且系统二进制 exec 也坏 → AMFI/信任缓存异常，先 Refresh App Registrations。")
-        } else if forkSub.0 == 0 {
-            lines.append("结论：fork 可用！那问题在 codex 的 shell 解析（os error 85 是 /var/jb/bin/sh 不合格），")
-            lines.append("unified exec + 顶替 /var/jb/bin/sh 那两步会接管，把这次的输出发我。")
+            lines.append("结论：bash 自身没起来，先查签名 / Helpers 注入（P0 的 rc 是 -1）。")
+        } else if spawnSystem.0 != 0, execReplace.0 != 0 {
+            lines.append("结论：连 exec 都失败 → AMFI / 信任缓存异常，先 TrollStore"+"「Refresh App Registrations」再试。")
+        } else if forkBroken {
+            lines.append("结论（已定性，不再是待查项）：")
+            lines.append("  · exec（P1）与 posix_spawn（P6）正常 → 创建进程的能力本身没坏；")
+            lines.append("  · 纯 fork（P2/P4/P5）必死 → iOS SDK 把 fork() 标为 unavailable，")
+            lines.append("    宿主侧任何「复制自己再执行」的工具（codex shell / Theos / make）都跑不起来；")
+            lines.append("  · 这与签名段、entitlement、arm64e、jbroot 残留都无关，是 iOS 的设计。")
+            lines.append("  · 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
         } else {
-            lines.append("结论：混合状态，请把以上全部 rc/输出原样发我。")
+            lines.append("结论：这次 fork 竟然测通了（与 SDK 标记相反），把上面全部 rc 原样发我。")
         }
         return lines.joined(separator: "\n")
     }
