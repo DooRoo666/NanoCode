@@ -37,7 +37,19 @@ struct NanoMuseCodexView: View {
 
     private var codexStatusText: String {
         guard let codexStatus else { return "检测中…" }
-        return codexStatus.summary
+        return codexStatus.headline
+    }
+
+    private var codexInstallText: String {
+        guard let codexStatus else { return "—" }
+        return codexStatus.installLine
+    }
+
+    private var codexRouteText: String {
+        guard let codexStatus else { return "—" }
+        guard let route = codexStatus.activeRoute else { return "未就绪" }
+        if let v = codexStatus.version, !v.isEmpty { return route + " · " + v }
+        return route
     }
 
     var body: some View {
@@ -55,6 +67,7 @@ struct NanoMuseCodexView: View {
 
             // ② 再安装：状态 → 回显 → 工具 → 原生工具 → 资源 → 更多
             statusCard
+            NanoMuseCaption(text: "Codex 面板 \(NanoMuseCodex.buildTag) · 状态只报实际装上的那条路线，缺的另一条不算错误。")
             logCard
             NanoMuseCaption(text: "推荐在「运行时」里用原生方式安装 codex（原版 iphoneos-arm64 包，跑在 iOS 上）；这里的 Alpine 方式适合纯 Linux 工具。")
 
@@ -86,7 +99,11 @@ struct NanoMuseCodexView: View {
 
     private var statusCard: some View {
         NanoMuseCard {
-            NanoMuseRowLabel(title: "Codex", value: codexStatusText, titleColor: .primary, chevron: false)
+            NanoMuseRowLabel(title: "状态", value: codexStatusText, titleColor: .primary, chevron: false)
+            NanoMuseRowDivider()
+            NanoMuseRowLabel(title: "已安装", value: codexInstallText, titleColor: .secondary, chevron: false)
+            NanoMuseRowDivider()
+            NanoMuseRowLabel(title: "调用", value: codexRouteText, titleColor: .secondary, chevron: false)
 
             if runningTool == "codex" || nativeRunning {
                 NanoMuseRowDivider()
@@ -104,6 +121,12 @@ struct NanoMuseCodexView: View {
                 if let spec = NanoMuseTools.catalog.first(where: { $0.id == "codex" }) {
                     install(spec)
                 }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "重新检测", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                codexStatus = nil
+                Task { await refreshAll() }
             }
             NanoMuseRowDivider()
             NanoMuseActionRow(title: "自检（打诊断信息）", chevron: false) {
@@ -681,8 +704,14 @@ struct NanoMuseCodexView: View {
 
     /// 逐行回显：`STEP`/`BYTES`/`ERR` 解析成进度，其余原样收下。
     private func append(_ raw: String) {
-        let line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var line = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !line.isEmpty else { return }
+
+        // codex 启动时会尝试在 HOME 下建 PATH 别名；容器权限偶尔拒绝，rc 仍是 0。
+        // 原样打印容易被当成「安装失败」，改写成一句人话。
+        if line.contains("PATH aliases") {
+            line = "提示：codex 未能创建 PATH 别名（无害，不影响运行）"
+        }
 
         if line.hasPrefix("BYTES ") {
             let parts = line.split(separator: " ")

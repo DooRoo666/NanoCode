@@ -21,9 +21,12 @@ public enum NanoMuseCodex {
         public let nativePath: String?
         public let nativeSize: Int
         public let nativeRuns: Bool
+        public let nativeVersion: String?
         public let rawOutput: String
 
-        public var installed: Bool { alpinePath != nil || nativePath != nil }
+        public var installed: Bool {
+            alpinePath != nil || nativePath != nil || (!NanoMuseNativeRuntime.installedIDs().isEmpty)
+        }
 
         /// codex_exec 实际会用的那条路（原生优先于"装了但跑不起来"的 Alpine）
         public var activeRoute: String? {
@@ -32,28 +35,57 @@ public enum NanoMuseCodex {
             if alpinePath != nil { return "Alpine（但跑不起来）" }
             return nil
         }
-        public var version: String? { alpineVersion }
 
-        /// 「Alpine 已装（0.163.0）· 原生 未装」
+        /// 当前实际会用的那条路的版本号
+        public var version: String? {
+            if activeRoute == "Alpine" { return alpineVersion ?? nativeVersion }
+            if activeRoute == "原生" { return nativeVersion ?? alpineVersion }
+            return nativeVersion ?? alpineVersion
+        }
+
+        private func sizeLabel(_ bytes: Int) -> String {
+            bytes > 0 ? "\(bytes / 1048576) MB" : "已装"
+        }
+
+        /// 卡片首行：先说结论，再说细节。
+        /// **绝不以「Alpine 未装」开头**——只装了原生时那不是问题，是正常状态。
+        public var headline: String {
+            if nativePath != nil, nativeRuns { return "已就绪 · 原生" }
+            if alpinePath != nil, alpineRuns { return "已就绪 · Alpine" }
+            if nativePath != nil { return "已安装 · 待验证" }
+            if alpinePath != nil { return "已安装 · 不可运行" }
+            if (!NanoMuseNativeRuntime.installedIDs().isEmpty) { return "已安装 · 待验证" }
+            return "未安装"
+        }
+
+        /// 「已装」说明：只写实际存在的那几条，缺失的那条不再当成错误提示。
         public var summary: String {
-            var parts: [String] = []
-            if let alpinePath {
-                let size = alpineSize > 0 ? " \(alpineSize / 1048576) MB" : ""
-                let state = alpineRuns ? (alpineVersion.map { " \($0)" } ?? " 可运行") : " 不可运行"
-                parts.append("Alpine 已装\(size) ·\(state)")
-                _ = alpinePath
-            } else {
-                parts.append("Alpine 未装")
-            }
-            if let nativePath {
-                let size = nativeSize > 0 ? " \(nativeSize / 1048576) MB" : ""
-                parts.append("原生 已装\(size)\(nativeRuns ? " 可运行" : " 未验证")")
-                _ = nativePath
-            } else {
-                parts.append("原生 未装")
-            }
+            var parts: [String] = [installLine]
             if let route = activeRoute {
                 parts.append("Agent 走 " + route)
+            }
+            if let version, !version.isEmpty {
+                parts.append(version)
+            }
+            return parts.joined(separator: " · ")
+        }
+
+        /// 只描述「装了什么」，不含路由与版本（给卡片单独一行用）
+        public var installLine: String {
+            var parts: [String] = []
+            if let nativePath {
+                parts.append("原生 \(sizeLabel(nativeSize))\(nativeRuns ? " 可运行" : " 未验证")")
+                _ = nativePath
+            }
+            if alpinePath != nil {
+                parts.append("Alpine \(sizeLabel(alpineSize))\(alpineRuns ? " 可运行" : " 不可运行")")
+            }
+            if parts.isEmpty {
+                // 目录里有东西但扫不到可执行文件
+                if (!NanoMuseNativeRuntime.installedIDs().isEmpty) {
+                    return "原生 目录已有内容，未找到可执行 codex"
+                }
+                return "未安装"
             }
             return parts.joined(separator: " · ")
         }
@@ -69,6 +101,9 @@ public enum NanoMuseCodex {
     /// 官方发布的 aarch64 musl 资产
     public static let downloadURL =
         "https://github.com/openai/codex/releases/latest/download/codex-aarch64-unknown-linux-musl.tar.gz"
+
+    /// 面板构建标记：装完新包先看这一行，确认跑的是新代码
+    public static let buildTag = "r4"
 
     /// Alpine 内的安装路径
     public static let binaryPath = "/usr/local/bin/codex"
@@ -106,20 +141,32 @@ public enum NanoMuseCodex {
 
     // MARK: - 原生二进制与探测
 
-    /// 在 runtimes 目录里找 codex 主程序。
+    /// 在运行目录里找 codex 主程序。
     /// **不依赖 .installed 标记**：标记在容器迁移/中断安装时会丢，
     /// 会造成"能跑却显示未装"。以内容为准。
+    /// 同时扫 `NanoCodex/` 与 `NanoCodex/runtimes/` 两处，布局变化也不会漏。
     static func nativeBinary() -> (path: String, size: Int)? {
-        let root = NanoMuseNativeRuntime.rootDirectory
-        guard let enumerator = FileManager.default.enumerator(at: root,
-                                                             includingPropertiesForKeys: [.fileSizeKey],
-                                                             options: []) else { return nil }
+        let fm = FileManager.default
+        var roots: [URL] = [NanoMuseNativeRuntime.rootDirectory]
+        roots.append(NanoMuseNativeRuntime.rootDirectory.deletingLastPathComponent())
+
+        var seen = Set<String>()
         var candidates: [(path: String, size: Int)] = []
-        for case let url as URL in enumerator {
-            guard url.lastPathComponent == "codex" else { continue }
-            guard FileManager.default.isExecutableFile(atPath: url.path) else { continue }
-            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            candidates.append((url.path, size))
+        for root in roots {
+            guard let enumerator = fm.enumerator(at: root,
+                                                 includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                                                 options: []) else { continue }
+            for case let url as URL in enumerator {
+                guard url.lastPathComponent == "codex" else { continue }
+                guard seen.insert(url.path).inserted else { continue }
+                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values?.isRegularFile == true else { continue }
+                let size = values?.fileSize ?? 0
+                // 没执行位也算「已装」——大小对得上就是那份二进制，安装流程会补 chmod
+                let executable = fm.isExecutableFile(atPath: url.path)
+                if !executable, size < 1_048_576 { continue }
+                candidates.append((url.path, size))
+            }
         }
         // deb 里 usr/bin/codex 是 52 KB 启动器（硬编码 /var/jb），
         // 真二进制在 usr/libexec/codex/codex（235 MB）→ 取最大的
@@ -169,6 +216,16 @@ public enum NanoMuseCodex {
         )
     }
 
+    /// 缓存里已知的原生版本（不启动进程，供工具列表即时显示）
+    static func cachedNativeVersion(path: String, size: Int) -> String? {
+        guard let saved = UserDefaults.standard.dictionary(forKey: "nanocodex.nativeProbe"),
+              saved["stamp"] as? String == stamp(for: path, size: size),
+              (saved["runs"] as? Bool) == true,
+              let value = saved["version"] as? String,
+              !value.isEmpty else { return nil }
+        return value
+    }
+
     // MARK: - 状态（分位置判定）
 
     public static func status() async -> Status {
@@ -200,6 +257,11 @@ public enum NanoMuseCodex {
         }
 
         let native = nativeBinary()
+        // 扫到了但没执行位（复制/解包时丢权限）→ 补上，否则会误判成"不可运行"
+        if let native, !FileManager.default.isExecutableFile(atPath: native.path) {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                   ofItemAtPath: native.path)
+        }
         let probe = await nativeProbe()
 
         return Status(
@@ -210,6 +272,7 @@ public enum NanoMuseCodex {
             nativePath: native?.path,
             nativeSize: native?.size ?? 0,
             nativeRuns: probe.runs,
+            nativeVersion: probe.runs ? probe.version : nil,
             rawOutput: out
         )
     }
@@ -526,8 +589,17 @@ public enum NanoMuseCodex {
             let home = codexHome()
             env["CODEX_HOME"] = home.path
             env["HOME"] = home.path
-            try? FileManager.default.createDirectory(at: home.appendingPathComponent("bin"),
-                                                     withIntermediateDirectories: true)
+            // 预先备好 codex 会去放 PATH 别名的那几个目录，
+            // 免得它每次启动都因为建不了目录而打一行 WARNING。
+            for sub in ["bin", ".local/bin", ".codex/bin", ".cache"] {
+                try? FileManager.default.createDirectory(at: home.appendingPathComponent(sub),
+                                                         withIntermediateDirectories: true)
+            }
+            env["PATH"] = [
+                home.appendingPathComponent("bin").path,
+                home.appendingPathComponent(".local/bin").path,
+                "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+            ].joined(separator: ":")
             syncAuthFromAlpine(into: home)
             if let apiKey, !apiKey.isEmpty { env["OPENAI_API_KEY"] = apiKey }
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
@@ -542,7 +614,12 @@ public enum NanoMuseCodex {
                                          timeout: timeout,
                                          extraEnvironment: env)
             }.value
-            return RunResult(exitCode: result.exitCode, output: result.output,
+            // PATH 别名那条 WARNING 无害（退出码仍是 0），别让它混进 Agent 看到的结果里
+            let cleaned = result.output
+                .split(separator: "\n", omittingEmptySubsequences: false)
+                .filter { !$0.contains("PATH aliases") }
+                .joined(separator: "\n")
+            return RunResult(exitCode: result.exitCode, output: cleaned,
                              errorOutput: "", duration: result.duration)
         }
 

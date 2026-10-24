@@ -152,6 +152,16 @@ enum NanoMuseTools {
 
     /// 查询某工具状态：有输出即已安装（输出就是版本行）
     static func status(of spec: NanoMuseToolSpec) async -> String? {
+        // Codex 本体两条路线都算「已装」：只装了原生时，
+        // Alpine 里那条 `[ -x /usr/local/bin/codex ]` 探针什么也不会输出。
+        if spec.id == "codex", let native = NanoMuseCodex.nativeBinary() {
+            let mb = native.size / 1048576
+            var text = mb > 0 ? "原生 已装 \(mb) MB" : "原生 已装"
+            if let version = NanoMuseCodex.cachedNativeVersion(path: native.path, size: native.size) {
+                text += " · " + version
+            }
+            return text
+        }
         let (_, output) = await NanoMuseCodex.runCommand("\(spec.checkCommand) 2>/dev/null || true", timeout: 60)
         let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
