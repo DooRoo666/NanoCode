@@ -15,6 +15,7 @@ struct NanoMuseCodexView: View {
     @State private var progress: Double?
     @State private var logLines: [String] = []
     @State private var copied = false
+    @State private var tipaPath = ""
     @State private var output = ""
     @State private var prompt = ""
 
@@ -148,14 +149,26 @@ struct NanoMuseCodexView: View {
                 }
             }
             NanoMuseRowDivider()
-            NanoMuseActionRow(title: "本地打包 tipa（把本 App 打包，不 fork）", chevron: false) {
+            HStack(spacing: 8) {
+                Image(systemName: "shippingbox")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                TextField("任意 .app 绝对路径（留空 = 打包本 App）", text: $tipaPath)
+                    .font(.caption.monospaced())
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            NanoMuseActionRow(title: "打包成 tipa（不 fork，Agent 也能调用 tipa_build）", chevron: false) {
                 guard !busy, !nativeRunning else { return }
                 logLines.removeAll()
                 nativeLog.clear()
                 append("===== 本地打包 tipa =====")
+                let raw = tipaPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                let path = raw.isEmpty ? Bundle.main.bundlePath : raw
                 Task {
-                    // 复制 128 MB + 打包都要在后台，否则主线程会卡死
-                    let path = Bundle.main.bundlePath
+                    // 复制 + 打包都要在后台，否则主线程会卡死
                     let report = await Task.detached(priority: .userInitiated) {
                         await NanoMuseTipaBuilder.build(appPath: path)
                     }.value

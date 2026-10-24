@@ -20,7 +20,8 @@ public enum NanoMuseTipaBuilder {
         public var tipa: String?
         public var bytes: Int64 = 0
         public var signed = 0
-        public var skipped = 0
+        public var kept = 0
+        public var failed = 0
         public var lines: [String] = []
 
         public var text: String { lines.joined(separator: "\n") }
@@ -80,27 +81,55 @@ public enum NanoMuseTipaBuilder {
         let hostExecutable = executableName(in: staged)
         let targets = machOFiles(under: staged)
         report.lines.append("      发现 \(targets.count) 个 Mach-O")
+        let rootPrefix = staged.path + "/"
         for file in targets {
-            let isMain = file.lastPathComponent == hostExecutable
-            let args: [String]
-            if isMain, let useEnt {
-                args = ["--entitlements", useEnt, file.path]
-            } else {
-                args = ["--adhoc-only", file.path]
+            let relative = file.path.hasPrefix(rootPrefix)
+                ? String(file.path.dropFirst(rootPrefix.count))
+                : file.lastPathComponent
+            let isMain = relative == hostExecutable
+
+            // Helpers 里的 bash.real / codex-sign / ca-filetool 是原版发布时签好的：
+            // 它们带着完整的巨魔权限，重签会被 codex-sign 拒绝（rc=200），
+            // 而且改了反而破坏原签名。原样保留。
+            if relative.hasPrefix("Helpers/") {
+                report.kept += 1
+                continue
             }
-            let run = await Task.detached(priority: .userInitiated) {
-                NanoMuseHelperRunner.run("codex-sign", arguments: args, timeout: 180)
-            }.value
-            if run.exitCode == 0 {
+            // 已经有代码签名的（Xcode 产出的 dylib / appex）也不重签，
+            // 只对主程序做「带 entitlements 的重签」。
+            if !isMain, hasCodeSignature(file) {
+                report.kept += 1
+                continue
+            }
+
+            // codex-sign 的参数形态不止一种：逐个试，成功即止
+            var attempts: [[String]] = []
+            if isMain, let useEnt {
+                attempts.append(["--entitlements", useEnt, file.path])
+            }
+            attempts.append(["--adhoc-only", file.path])
+            attempts.append([file.path])
+
+            var done = false
+            var lastCode: Int32 = -1
+            for args in attempts {
+                let run = await Task.detached(priority: .userInitiated) {
+                    NanoMuseHelperRunner.run("codex-sign", arguments: args, timeout: 180)
+                }.value
+                lastCode = run.exitCode
+                if run.exitCode == 0 { done = true; break }
+            }
+            if done {
                 report.signed += 1
             } else {
-                report.skipped += 1
+                // 签不上不阻断：原签名还在，包依然可用
+                report.failed += 1
                 if report.lines.count < 400 {
-                    report.lines.append("      签名失败 rc=\(run.exitCode)：\(file.lastPathComponent)")
+                    report.lines.append("      未签（rc=\(lastCode)，保留原签名）：\(relative)")
                 }
             }
         }
-        report.lines.append("      已签 \(report.signed)，失败 \(report.skipped)")
+        report.lines.append("      重签 \(report.signed)，保留原签名 \(report.kept)，未签 \(report.failed)")
 
         report.lines.append("[3/4] 打包 ZIP（进程内，无子进程）…")
         let name = outputName ?? "\(src.deletingPathExtension().lastPathComponent).tipa"
@@ -140,9 +169,60 @@ public enum NanoMuseTipaBuilder {
     }
 
     private static func sizeText(_ url: URL) -> String {
-        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attrs?[.size] as? Int64) ?? 0
-        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        ByteCountFormatter.string(fromByteCount: directorySize(url), countStyle: .file)
+    }
+
+    /// 目录要递归求和 —— 直接读目录 inode 会得到「2 KB」这种假数字。
+    private static func directorySize(_ url: URL) -> Int64 {
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return 0 }
+        if !isDir.boolValue {
+            let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+            return (attrs?[.size] as? Int64) ?? 0
+        }
+        var total: Int64 = 0
+        if let walker = FileManager.default.enumerator(at: url, includingPropertiesForKeys: keys) {
+            for case let file as URL in walker {
+                guard let values = try? file.resourceValues(forKeys: Set(keys)),
+                      values.isRegularFile == true else { continue }
+                total += Int64(values.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    /// 读 Mach-O 头判断有没有 LC_CODE_SIGNATURE。
+    /// 已有签名的不去动它（codex-sign 对已签名文件返回 200，且原签名往往更好）。
+    /// fat/其它容器一律保守当作「已签名」。
+    private static func hasCodeSignature(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return true }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 32), head.count >= 28 else { return true }
+        let bytes = [UInt8](head)
+        func u32(_ offset: Int) -> UInt32 {
+            UInt32(bytes[offset])
+                | (UInt32(bytes[offset + 1]) << 8)
+                | (UInt32(bytes[offset + 2]) << 16)
+                | (UInt32(bytes[offset + 3]) << 24)
+        }
+        let magic = u32(0)
+        guard magic == 0xFEEDFACF || magic == 0xFEEDFACE else { return true }
+        let commandCount = u32(16)
+        var offset = magic == 0xFEEDFACF ? 32 : 28
+        for _ in 0..<min(commandCount, 4096) {
+            guard let raw = try? handle.read(upToCount: 8), raw.count == 8 else { break }
+            let cmds = [UInt8](raw)
+            let command = UInt32(cmds[0]) | (UInt32(cmds[1]) << 8)
+                | (UInt32(cmds[2]) << 16) | (UInt32(cmds[3]) << 24)
+            let size = UInt32(cmds[4]) | (UInt32(cmds[5]) << 8)
+                | (UInt32(cmds[6]) << 16) | (UInt32(cmds[7]) << 24)
+            if command == 0x1d { return true }          // LC_CODE_SIGNATURE
+            if size < 8 { break }
+            offset += Int(size)
+            try? handle.seek(toOffset: UInt64(offset))
+        }
+        return false
     }
 
     private static func executableName(in app: URL) -> String? {

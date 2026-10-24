@@ -127,6 +127,20 @@ SUBAGENT_DEFS_INSERT = (
 
 HOST_FS_DEFS_INSERT = "            NanoMuseHostFileTool.definition,\n"
 
+TIPA_DEFS_INSERT = "            NanoMuseTipaTool.definition,\n"
+
+# 打包成 .tipa 的工具：Agent 写完/改完代码后可以直接产出安装包。
+# 它不 fork（Foundation 复制 + codex-sign 的 posix_spawn + 自写 ZIP），
+# 所以在「宿主 fork 被 iOS 禁用」的设备上依然可用。
+TIPA_DISPATCH_INSERT = '''        case "tipa_build":
+            let tipaApp = (toolArgs["app"] as? String) ?? ""
+            let tipaName = toolArgs["output"] as? String
+            let tipaOutcome = await NanoMuseTipaTool.execute(app: tipaApp, output: tipaName)
+            toolOutput = tipaOutcome.text
+            toolSuccess = tipaOutcome.exitCode == 0
+
+'''
+
 HOST_FS_DISPATCH_INSERT = '''        case "host_fs":
             let fsOp = (toolArgs["op"] as? String) ?? "list"
             let fsPath = (toolArgs["path"] as? String) ?? ""
@@ -218,6 +232,10 @@ def patch_codex(root: pathlib.Path, check_only: bool) -> int:
          HOST_FS_DEFS_INSERT, "tool definition (host_fs)", False),
         (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "host_fs":',
          HOST_FS_DISPATCH_INSERT, "tool dispatch (host_fs)", True),
+        (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseTipaTool.definition",
+         TIPA_DEFS_INSERT, "tool definition (tipa_build)", False),
+        (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "tipa_build":',
+         TIPA_DISPATCH_INSERT, "tool dispatch (tipa_build)", True),
         (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
          SETTINGS_INSERT, "settings card (Codex)", False),
         (MERMAID_FILE, MERMAID_ANCHOR, "NanoMuseMermaidAttachment.makeView",
