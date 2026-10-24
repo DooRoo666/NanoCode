@@ -58,7 +58,13 @@ enum NanoMuseNativeRuntime {
     }
 
     static func isInstalled(_ id: String) -> Bool {
-        FileManager.default.fileExists(atPath: directory(for: id).appendingPathComponent(".installed").path)
+        let dir = directory(for: id)
+        if FileManager.default.fileExists(atPath: dir.appendingPathComponent(".installed").path) {
+            return true
+        }
+        // 标记丢失但内容还在（容器迁移、中断安装）→ 以内容为准
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return !contents.isEmpty
     }
 
     static func installedIDs() -> [String] {
