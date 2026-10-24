@@ -64,18 +64,25 @@ else
   echo "   (跳过：没有 vendor/bundle)"
 fi
 
-echo "== 1/4 nested Mach-O: ad-hoc =="
+echo "== 1/4 nested Mach-O: Helpers 用完整权限，其余 ad-hoc =="
+# 关键：Helpers/ 里的 codex-sign / ca-filetool / bash.real 自带
+# platform-application + com.apple.private.security.no-sandbox 等权限。
+# 用裸 ldid -S 重签会把它们全部剥掉，导致运行时被内核 SIGKILL(137)，
+# 进而没人能给 codex 签名 → posix_spawn EBADEXEC。
+# 所以 Helpers 一律用 -S"$MAIN_ENT" 签。
 count=0
+helperCount=0
 while IFS= read -r -d '' f; do
   if is_macho "$f"; then
     case "$f" in
       "$TARGET/$APP_NAME") continue ;;                    # 主程序最后签
       *.appex/*) continue ;;                              # 扩展单独签
+      */Helpers/*) "$LDID" -S"$MAIN_ENT" "$f"; helperCount=$((helperCount+1)) ;;
       *) "$LDID" -S "$f"; count=$((count+1)) ;;
     esac
   fi
 done < <(find "$TARGET" -type f -print0)
-echo "   signed $count nested binaries"
+echo "   signed $count nested binaries, $helperCount helpers with entitlements"
 
 echo "== 2/4 extensions =="
 shopt -s nullglob
