@@ -595,11 +595,6 @@ public enum NanoMuseCodex {
                 try? FileManager.default.createDirectory(at: home.appendingPathComponent(sub),
                                                          withIntermediateDirectories: true)
             }
-            env["PATH"] = [
-                home.appendingPathComponent("bin").path,
-                home.appendingPathComponent(".local/bin").path,
-                "/usr/bin", "/bin", "/usr/sbin", "/sbin",
-            ].joined(separator: ":")
             syncAuthFromAlpine(into: home)
             if let apiKey, !apiKey.isEmpty { env["OPENAI_API_KEY"] = apiKey }
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
