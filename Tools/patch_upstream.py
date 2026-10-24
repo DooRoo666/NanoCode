@@ -125,6 +125,18 @@ SUBAGENT_DEFS_INSERT = (
     "            NanoMuseSubagentTool.resultDefinition,\n"
 )
 
+HOST_FS_DEFS_INSERT = "            NanoMuseHostFileTool.definition,\n"
+
+HOST_FS_DISPATCH_INSERT = '''        case "host_fs":
+            let fsOp = (toolArgs["op"] as? String) ?? "list"
+            let fsPath = (toolArgs["path"] as? String) ?? ""
+            let fsMax = (toolArgs["max_bytes"] as? Int) ?? 65536
+            let fsOutcome = await NanoMuseHostFileTool.execute(op: fsOp, path: fsPath, maxBytes: fsMax)
+            toolOutput = fsOutcome.text
+            toolSuccess = fsOutcome.exitCode == 0
+
+'''
+
 SUBAGENT_DISPATCH_INSERT = '''        case "subagent_dispatch":
             let subPrompt = (toolArgs["prompt"] as? String) ?? ""
             let subWorkspace = (toolArgs["workspace"] as? String) ?? "/root/work"
@@ -202,6 +214,10 @@ def patch_codex(root: pathlib.Path, check_only: bool) -> int:
          HOST_DEFS_INSERT, "tool definition (host_exec)", False),
         (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "host_exec":',
          HOST_DISPATCH_INSERT, "tool dispatch (host_exec)", True),
+        (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseHostFileTool.definition",
+         HOST_FS_DEFS_INSERT, "tool definition (host_fs)", False),
+        (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "host_fs":',
+         HOST_FS_DISPATCH_INSERT, "tool dispatch (host_fs)", True),
         (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
          SETTINGS_INSERT, "settings card (Codex)", False),
         (MERMAID_FILE, MERMAID_ANCHOR, "NanoMuseMermaidAttachment.makeView",

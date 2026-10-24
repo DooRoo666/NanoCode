@@ -511,6 +511,25 @@ public enum NanoMuseCodex {
                 lines.append("    不存在  \(dir)")
             }
         }
+
+        // [7] 关键自测：这台设备还能不能「创建进程」。
+        // exec 型与 fork 型分开测——有的设备 exec 尚可、fork 直接 SIGBUS（rc=138 = 128+10）。
+        lines.append("[7] 进程创建自测")
+        let execProbe = NanoMuseHelperRunner.run("bash.real",
+                                                 arguments: ["-c", "echo exec-ok"],
+                                                 timeout: 15)
+        let execFirst = execProbe.output.split(separator: "\n").first.map(String.init) ?? ""
+        lines.append("    exec  bash.real -c 'echo exec-ok'  → rc=\(execProbe.exitCode)  \(execFirst)")
+        let forkProbe = NanoMuseHelperRunner.run("bash.real",
+                                                 arguments: ["-c", "( exit 1 )"],
+                                                 timeout: 15)
+        lines.append("    fork  bash.real -c '( exit 1 )'    → rc=\(forkProbe.exitCode)")
+        if forkProbe.exitCode == 138 || forkProbe.exitCode == 133 || execProbe.exitCode < 0 {
+            lines.append("    → 结论：宿主「创建进程」不可用。原生 codex / Theos / host_exec 都会失败；")
+            lines.append("      改用 host_fs 读系统数据（不 fork），执行类任务走 iSH。")
+        } else {
+            lines.append("    → 结论：进程创建可用。")
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -599,10 +618,16 @@ public enum NanoMuseCodex {
 
         let current = await status()
 
+        // 宿主这条路依赖「创建进程」；有些设备 fork 本身就是坏的
+        // （连 `( exit 1 )` 都 SIGBUS），原生 codex 一定起不来。
+        // 这时直接走 iSH 里的 codex —— 它跑在 Linux 用户态里，不需要宿主 fork。
+        let preferAlpine = (current.alpinePath != nil) && current.alpineRuns
+            && (current.nativePath == nil || !current.nativeRuns)
+
         // 原生二进制：只要 Alpine 那条「装了但跑不起来」，就直接用原生。
         // 否则会出现：Alpine 的 musl 程序一跑就崩，codex_exec 却一直往那条路走。
         let alpineUsable = (current.alpinePath != nil) && current.alpineRuns
-        if !alpineUsable, let native = nativeBinary() {
+        if !preferAlpine, !alpineUsable, let native = nativeBinary() {
             // `exec` 默认是 read-only 沙箱（在 macOS 上走 seatbelt，iOS 没有这层，
             // 结果就是命令跑不动、写不了文件 → 看起来"能起但读不到系统数据"）。
             // 这个 App 本身就是边界（TrollStore 带 no-sandbox / platform-application），
@@ -738,13 +763,25 @@ public enum NanoMuseCodex {
                              errorOutput: "", duration: 0)
         }
 
-        // Alpine 路线
+        // Alpine 路线：同样把 provider 显式声明出来，否则会打 api.openai.com
         var env: [String] = []
         if let apiKey, !apiKey.isEmpty { env.append("export OPENAI_API_KEY=\(quote(apiKey))") }
         if let baseURL, !baseURL.isEmpty { env.append("export OPENAI_BASE_URL=\(quote(baseURL))") }
         if let model, !model.isEmpty { env.append("export CODEX_MODEL=\(quote(model))") }
 
-        var args = ["exec", "--skip-git-repo-check"]
+        var args = ["exec"]
+        if let apiKey, let baseURL, !apiKey.isEmpty, !baseURL.isEmpty {
+            let provider = "nanomuse"
+            args.append(contentsOf: [
+                "-c", quote("model_provider=\"\(provider)\""),
+                "-c", quote("model_providers.\(provider).name=\"nanoMuse\""),
+                "-c", quote("model_providers.\(provider).base_url=\"\(baseURL)\""),
+                "-c", quote("model_providers.\(provider).env_key=\"OPENAI_API_KEY\""),
+                "-c", quote("model_providers.\(provider).wire_api=\"\(NanoMuseCodexSettings.wireAPI)\""),
+            ])
+            if let model, !model.isEmpty { args.append(contentsOf: ["-m", quote(model)]) }
+        }
+        args.append("--skip-git-repo-check")
         args.append(contentsOf: extraArgs)
         let command = """
         mkdir -p \(quote(workspace))
