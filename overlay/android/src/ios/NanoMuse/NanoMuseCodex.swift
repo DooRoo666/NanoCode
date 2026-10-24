@@ -613,6 +613,14 @@ public enum NanoMuseCodex {
         let forkSubst = await run("[P4] 命令替换 $( )", "bash.real", ["-c", "v=$(echo x); echo got-$v"])
         let forkBg = await run("[P5] 后台 fork：true & wait", "bash.real", ["-c", "true & wait"])
 
+        // 决定性的两组：bash 对「简单命令」有 posix_spawn 优化，只有管道/重定向才退回 fork。
+        // 如果 P7 通、P8 死，说明 codex 的 shell 在简单命令下其实可用，
+        // 不能用的是管道、重定向、命令替换这类必须 fork 的语法。
+        let simpleExec = await run("[P7] 简单外部命令（无重定向）：ls /", "bash.real",
+                                   ["-c", "ls /"], keep: 2)
+        let pipeExec = await run("[P8] 管道：ls / | head -1", "bash.real",
+                                 ["-c", "ls / | head -1"], keep: 2)
+
         lines.append(forkFromMain())
         lines.append("---- 判读 ----")
 
@@ -635,6 +643,13 @@ public enum NanoMuseCodex {
             lines.append("  · 根因：iOS SDK 把 fork() 标为 unavailable（编译器原文见上），")
             lines.append("    宿主侧任何「复制自己再执行」的工具（codex shell / Theos / make）都不可能工作；")
             lines.append("  · 与签名段、entitlement、arm64e、jbroot 残留均无关，这是 iOS 的设计边界。")
+            if simpleExec.0 == 0 {
+                lines.append("  · 但 P7「ls /」成功了 → bash 的**简单命令**走 posix_spawn，不需要 fork；")
+                lines.append("    也就是说 codex 的 shell 在「单条命令、无管道无重定向」时其实可用，")
+                lines.append("    不能用的是管道（P8 rc=\(pipeExec.0)）、重定向（P3）、命令替换（P4）、子 shell（P2/P5）。")
+            } else {
+                lines.append("  · P7「ls /」也死 → bash 连简单命令都要 fork，codex 的 shell 完全不可用。")
+            }
             lines.append("  → 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
         } else if forkDead, !(execWorks && spawnWorks) {
             lines.append("结论：fork 死（P2/P3/P5 Bus error），且探针 exec/spawn 未取到 rc=0")
