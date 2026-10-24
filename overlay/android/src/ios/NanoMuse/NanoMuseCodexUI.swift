@@ -135,6 +135,17 @@ struct NanoMuseCodexView: View {
                 checkProviders()
             }
             NanoMuseRowDivider()
+            NanoMuseActionRow(title: "进程阶梯测试（fork/exec 分离）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                logLines.removeAll()
+                nativeLog.clear()
+                append("===== 进程阶梯测试 =====")
+                Task {
+                    let report = await NanoMuseCodex.processLadder()
+                    for line in report.split(separator: "\n") { append(String(line)) }
+                }
+            }
+            NanoMuseRowDivider()
             NanoMuseActionRow(title: "修复宿主 shell（写 /var/jb/bin/sh）", chevron: false) {
                 guard !busy, !nativeRunning else { return }
                 logLines.removeAll()
