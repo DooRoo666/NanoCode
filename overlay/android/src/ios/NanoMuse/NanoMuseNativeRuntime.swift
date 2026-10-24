@@ -105,6 +105,14 @@ enum NanoMuseNativeRuntime {
 
         // ---- 已装则跳过下载与解包 ----
         let marker = destination.appendingPathComponent(".installed")
+        // 布局校验：deb 必须是 var/jb/... 结构；上次被"归一化"成 jb/ 的要强制重解
+        let expectedLayout = destination.appendingPathComponent("var/jb")
+        let layoutBroken = package.archiveURL.lowercased().hasSuffix(".deb")
+            && !FileManager.default.fileExists(atPath: expectedLayout.path)
+        if layoutBroken, FileManager.default.fileExists(atPath: marker.path) {
+            await log.add("检测到旧布局（缺 var/jb），重新解包")
+            try? FileManager.default.removeItem(at: marker)
+        }
         let alreadyInstalled = FileManager.default.fileExists(atPath: marker.path)
         if alreadyInstalled {
             await log.add("STEP 2-4/5 跳过：已安装（只重新签名与探测）")
@@ -762,7 +770,13 @@ enum NanoMuseNativeRuntime {
         }
 
         var signed = 0
+        // 单个文件 > 64 MB 时签名工具很容易被 jetsam 杀掉（SIGKILL/137），
+        // 而且 deb 里的大二进制本来就带签名，先跳过、交给"运行探测"判断。
+        let sizeLimit = 64 * 1024 * 1024
+        var skippedBig = 0
         for url in targets {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            if size > sizeLimit { skippedBig += 1; continue }
             var ok = false
             if hasEntitlements {
                 let entitled = await Task.detached(priority: .utility) {
@@ -782,6 +796,9 @@ enum NanoMuseNativeRuntime {
                 ok = adhoc.exitCode == 0
             }
             if ok { signed += 1 }
+        }
+        if skippedBig > 0 {
+            await log.add("  跳过 \(skippedBig) 个超过 64 MB 的文件（避免签名工具被系统杀掉）")
         }
         return signed
     }

@@ -343,6 +343,47 @@ public enum NanoMuseCodex {
         """#
     }
 
+    // MARK: - 签名诊断（把 rc 变成证据）
+
+    /// 三个探针，定位「codex-sign 到底死在哪」：
+    ///   ① 包内 bash.real 能不能跑（验证 in-bundle ad-hoc 是否被接受）
+    ///   ② 包内 codex-sign 能不能跑（验证它自己的签名）
+    ///   ③ 把 codex-sign 复制到 App 容器再跑（验证是否与路径有关）
+    public static func signDiagnostics() async -> String {
+        var lines: [String] = []
+
+        let bash = NanoMuseHelperRunner.run("bash.real",
+                                            arguments: ["-c", "echo bash-ok; id -u"],
+                                            timeout: 20)
+        lines.append("[1] 包内 bash.real rc=\(bash.exitCode)")
+        lines.append("    " + bash.output.split(separator: "\n").prefix(2).joined(separator: " | "))
+
+        let help = NanoMuseHelperRunner.run("codex-sign", arguments: ["--help"], timeout: 20)
+        lines.append("[2] 包内 codex-sign --help rc=\(help.exitCode)")
+        lines.append("    " + help.output.split(separator: "\n").prefix(2).joined(separator: " | "))
+
+        let home = codexHome()
+        let copy = home.appendingPathComponent("codex-sign-copy")
+        let source = Bundle.main.bundlePath + "/Helpers/codex-sign"
+        try? FileManager.default.removeItem(at: copy)
+        do {
+            try FileManager.default.copyItem(atPath: source, toPath: copy.path)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: copy.path)
+            let run = NanoMuseHelperRunner.run(copy.path, arguments: ["--help"], timeout: 20)
+            lines.append("[3] 容器内 codex-sign --help rc=\(run.exitCode)")
+            lines.append("    " + run.output.split(separator: "\n").prefix(2).joined(separator: " | "))
+        } catch {
+            lines.append("[3] 复制失败：\(error.localizedDescription)")
+        }
+
+        if let binary = nativeBinary() {
+            let probe = NanoMuseHelperRunner.run(binary.path, arguments: ["--version"], timeout: 30)
+            lines.append("[4] codex 主程序 rc=\(probe.exitCode)  \(binary.size / 1048576) MB")
+            lines.append("    " + probe.output.split(separator: "\n").prefix(3).joined(separator: " | "))
+        }
+        return lines.joined(separator: "\n")
+    }
+
     // MARK: - 权限探针（原生 vs iSH 对照）
 
     /// 由 Minis 本体 posix_spawn 出来的 bash：能看到宿主 App 的沙盒边界。

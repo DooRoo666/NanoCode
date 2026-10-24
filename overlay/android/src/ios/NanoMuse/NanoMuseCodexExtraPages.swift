@@ -509,6 +509,15 @@ struct NanoMuseSignerPage: View {
                 NanoMuseActionRow(title: busy ? "签名中…" : "执行签名", chevron: false) {
                     sign()
                 }
+                NanoMuseRowDivider()
+                NanoMuseActionRow(title: "签名诊断（4 项）", chevron: false) {
+                    Task {
+                        busy = true
+                        output = "诊断中…"
+                        output = await NanoMuseCodex.signDiagnostics()
+                        busy = false
+                    }
+                }
             }
             NanoMuseCaption(text: mode == .entitled
                             ? "带权限模式会用随包的 entitlements.plist（12 项巨魔权限）。"
