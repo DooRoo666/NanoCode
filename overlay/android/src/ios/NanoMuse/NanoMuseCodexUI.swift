@@ -148,6 +148,21 @@ struct NanoMuseCodexView: View {
                 }
             }
             NanoMuseRowDivider()
+            NanoMuseActionRow(title: "本地打包 tipa（把本 App 打包，不 fork）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                logLines.removeAll()
+                nativeLog.clear()
+                append("===== 本地打包 tipa =====")
+                Task {
+                    // 复制 128 MB + 打包都要在后台，否则主线程会卡死
+                    let path = Bundle.main.bundlePath
+                    let report = await Task.detached(priority: .userInitiated) {
+                        await NanoMuseTipaBuilder.build(appPath: path)
+                    }.value
+                    for line in report.lines { append(line) }
+                }
+            }
+            NanoMuseRowDivider()
             NanoMuseActionRow(title: "修复宿主 shell（写 /var/jb/bin/sh）", chevron: false) {
                 guard !busy, !nativeRunning else { return }
                 logLines.removeAll()
