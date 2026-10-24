@@ -659,14 +659,20 @@ public enum NanoMuseCodex {
                 lines.append("  · 但 P7「ls /」成功了 → bash 的**简单命令**走 posix_spawn，不需要 fork；")
                 lines.append("    也就是说 codex 的 shell 在「单条命令、无管道无重定向」时其实可用，")
                 lines.append("    不能用的是管道（P8 rc=\(pipeExec.0)）、重定向（P3）、命令替换（P4）、子 shell（P2/P5）。")
+            } else if simpleExec.0 == 127 {
+                lines.append("  · P7 返回 127（命令找不到）——这是 Helpers 符号链接/PATH 的问题，")
+                lines.append("    不是 fork 的问题。修好符号链接后 P7 才能反映真实边界。")
             } else {
-                lines.append("  · P7「ls /」也死 → bash 连简单命令都要 fork，codex 的 shell 完全不可用。")
+                lines.append("  · P7 rc=\(simpleExec.0) → bash 连简单命令都要 fork，codex 的 shell 完全不可用。")
             }
             lines.append("  → 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
-            if nshExec.0 == 0 {
+            if nshExec.0 == 0, !nshExec.1.contains("No such file") {
                 lines.append("  ✅ P9 通过：随包 nsh 用 posix_spawn 跑通了管道（rc=0）。")
                 lines.append("     所以 codex 的 shell 现在能执行：单命令、管道、重定向、; && ||、cd、export、通配符。")
                 lines.append("     不能执行的只剩需要复制进程的语法：$( )、( )、& 后台。")
+            } else if nshExec.1.contains("No such file") {
+                lines.append("  ⚠️ P9：nsh 起来了，但连 ls/head 都找不到 → Helpers 符号链接坏了")
+                lines.append("     （链接目标应为 ca-filetool；带 \\r 的会失效）。修好链接即可。")
             } else if FileManager.default.isExecutableFile(atPath: nshPath) {
                 lines.append("  ⚠️ P9 失败（rc=\(nshExec.0)）：nsh 在，但管道没跑通，把上面 P9 的输出发我。")
             }

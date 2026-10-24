@@ -406,6 +406,7 @@ static int run_segment(char *text) {
     /* 管道：每段一次 posix_spawn，用 pipe 串联，不 fork */
     pid_t pids[MAX_STAGES];
     int pid_count = 0;
+    int failures = 0;
     int prev_read = -1;
 
     for (int i = 0; i < seg_count; i++) {
@@ -431,6 +432,7 @@ static int run_segment(char *text) {
         if (!handled) {
             pid_t pid = spawn_command(&cmd, in_fd, out_fd);
             if (pid > 0) pids[pid_count++] = pid;
+            else failures++;
         }
 
         if (prev_read >= 0) close(prev_read);
@@ -438,6 +440,9 @@ static int run_segment(char *text) {
         prev_read = need_pipe ? fds[0] : -1;
     }
     if (prev_read >= 0) close(prev_read);
+
+    /* 一个都没起来：这是「命令找不到」，不是成功 —— 必须返回 127 */
+    if (pid_count == 0) return failures > 0 ? 127 : 0;
 
     int status = 0;
     for (int i = 0; i < pid_count; i++) {

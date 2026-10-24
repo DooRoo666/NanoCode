@@ -54,6 +54,11 @@ if [ -d "$HELPERS_SRC" ]; then
   if [ -f "$HELPERS_SRC/_symlinks.txt" ]; then
     while IFS=$'\t' read -r link target; do
       [ -z "${link:-}" ] && continue
+      # _symlinks.txt 是 Windows 仓库里的 CRLF：必须剥掉行尾的 \r，
+      # 否则链接会指向 "ca-filetool\r" 这种不存在的文件，
+      # 结果就是 ls / cat / grep / head 全部 command not found。
+      link="${link%$'\r'}"
+      target="${target%$'\r'}"
       mkdir -p "$TARGET/Helpers/$(dirname "$link")"
       ln -sfn "$target" "$TARGET/Helpers/$link"
     done < "$HELPERS_SRC/_symlinks.txt"
