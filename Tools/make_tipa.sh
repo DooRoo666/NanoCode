@@ -17,7 +17,18 @@ LDID="${LDID:-$(command -v ldid || true)}"
 [ -n "$LDID" ] || { echo "error: ldid not found (brew install ldid)" >&2; exit 1; }
 APP_NAME="$(basename "$APP" .app)"
 MAIN_ENT="$ROOT/Tools/entitlements-app.plist"
+RUNTIME_ENT="$ROOT/Tools/entitlements-runtime.plist"
 [ -f "$MAIN_ENT" ] || { echo "error: missing $MAIN_ENT" >&2; exit 1; }
+[ -f "$RUNTIME_ENT" ] || { echo "error: missing $RUNTIME_ENT" >&2; exit 1; }
+
+# extended-virtual-addressing 会把进程变成 48 位扩展地址布局，fork() 无法克隆 →
+# 子进程取指就 SIGBUS（Bus error 10）。bash.real 的 ( exit 1 )、codex 起 shell 都会崩。
+# 任何人再把它加回签名模板，这里直接让构建失败。
+if grep -q "extended-virtual-addressing" "$MAIN_ENT" "$RUNTIME_ENT"; then
+  echo "error: entitlements 里仍有 extended-virtual-addressing —— 它会让 fork() 全部 SIGBUS" >&2
+  echo "       把它从 Tools/entitlements-app.plist 与 Tools/entitlements-runtime.plist 里删掉。" >&2
+  exit 1
+fi
 
 is_macho() { file -b "$1" 2>/dev/null | grep -q "Mach-O"; }
 
@@ -63,6 +74,11 @@ if [ -d "$BUNDLE_SRC" ]; then
 else
   echo "   (跳过：没有 vendor/bundle)"
 fi
+
+# 用「不含 extended-virtual-addressing」的模板覆盖随包的 entitlements.plist：
+# 这个文件既是我们给 codex 等运行时签名的模板，也是签名页展示的权限清单。
+cp "$RUNTIME_ENT" "$TARGET/entitlements.plist"
+echo "   entitlements.plist ← Tools/entitlements-runtime.plist（已去掉 extended-virtual-addressing）"
 
 echo "== 1/4 nested Mach-O: Helpers 用完整权限，其余 ad-hoc =="
 # 关键：Helpers/ 里的 codex-sign / ca-filetool / bash.real 自带
