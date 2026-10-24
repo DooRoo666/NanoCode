@@ -63,6 +63,33 @@ else
   echo "   (跳过：没有 vendor/helpers)"
 fi
 
+echo "== 0a/4 编译 forkless shell（nsh） =="
+# bash.real 执行任何外部命令、管道、重定向都要 fork，而 iOS 从 SDK 层禁了 fork，
+# 结果就是 codex 的 shell 一调命令就 SIGBUS(10)。
+# nsh 用 posix_spawn 实现同样的语义（管道靠 pipe()+两次 spawn），全程不 fork，
+# 所以把它作为 codex 的 $SHELL / sh / bash，codex 的命令执行才真的能用。
+NSH_SRC="$ROOT/Tools/forkless-sh/nsh.c"
+if [ -f "$NSH_SRC" ] && command -v xcrun >/dev/null 2>&1; then
+  SDKDIR="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
+  NSH_OK=0
+  if [ -n "$SDKDIR" ]; then
+    # arm64 更稳（arm64e 需要额外 linker 支持），系统两种都能跑
+    if xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 \
+        -O2 -Wall -Wextra -Wno-unused-parameter -isysroot "$SDKDIR" \
+        -o "$TARGET/Helpers/nsh" "$NSH_SRC" 2>&1; then
+      chmod 0755 "$TARGET/Helpers/nsh"
+      NSH_OK=1
+    fi
+  fi
+  if [ "$NSH_OK" = "1" ]; then
+    echo "   nsh 编译完成：$(du -h "$TARGET/Helpers/nsh" | cut -f1)"
+  else
+    echo "   warning: nsh 编译失败，codex 仍会退回 bash.real（fork 会崩）" >&2
+  fi
+else
+  echo "   (跳过：没有 nsh.c 或 xcrun)"
+fi
+
 echo "== 0b/4 随包资源（Mermaid / cacert / models.json / 兜底提示词 / Notices） =="
 BUNDLE_SRC="$ROOT/vendor/bundle"
 if [ -d "$BUNDLE_SRC" ]; then

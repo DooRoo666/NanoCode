@@ -796,17 +796,26 @@ public enum NanoMuseCodex {
                 try? FileManager.default.createDirectory(at: home.appendingPathComponent(sub),
                                                          withIntermediateDirectories: true)
             }
-            // codex 执行命令要靠 shell；iOS 上没有 /bin/sh。
-            // 把随包的 bash.real 以 bash / sh 两个名字软链进容器的 bin/，并置于 PATH 前。
+            // codex 执行命令要靠 shell；iOS 上没有 /bin/sh 且 bash 一执行外部命令就 fork → SIGBUS。
+            // 所以优先用随包的 nsh：它用 posix_spawn 实现管道/重定向/序列，全程不 fork。
+            // 没有 nsh 时才退回 bash.real（那种情况下管道和重定向依然会崩，但有总比没有好）。
             let binDir = home.appendingPathComponent("bin", isDirectory: true)
             let bashPath = NanoMuseHelperRunner.path("bash.real")
-            if FileManager.default.isExecutableFile(atPath: bashPath) {
+            let nshPath = NanoMuseHelperRunner.path("nsh")
+            let shellPath: String
+            if FileManager.default.isExecutableFile(atPath: nshPath) {
+                shellPath = nshPath
+            } else if FileManager.default.isExecutableFile(atPath: bashPath) {
+                shellPath = bashPath
+            } else {
+                shellPath = ""
+            }
+            if !shellPath.isEmpty {
                 for alias in ["bash", "sh"] {
                     let linkPath = binDir.appendingPathComponent(alias).path
-                    if !FileManager.default.fileExists(atPath: linkPath) {
-                        try? FileManager.default.createSymbolicLink(atPath: linkPath,
-                                                                   withDestinationPath: bashPath)
-                    }
+                    try? FileManager.default.removeItem(atPath: linkPath)   // 可能已链到 bash.real
+                    try? FileManager.default.createSymbolicLink(atPath: linkPath,
+                                                               withDestinationPath: shellPath)
                 }
             }
             env["PATH"] = [
@@ -814,9 +823,14 @@ public enum NanoMuseCodex {
                 NanoMuseHelperRunner.helpersDirectory,
                 "/usr/bin", "/bin", "/usr/sbin", "/sbin",
             ].joined(separator: ":")
-            // 有些路径（PTY / 登录 shell）会直接读 $SHELL，也指向随包的 bash.real
-            if FileManager.default.isExecutableFile(atPath: bashPath) {
-                env["SHELL"] = bashPath
+            // 有些路径（PTY / 登录 shell）会直接读 $SHELL
+            if !shellPath.isEmpty {
+                env["SHELL"] = shellPath
+            }
+            // codex 自己解析 shell 时会先看这几个变量
+            if !shellPath.isEmpty {
+                env["CODEX_SHELL"] = shellPath
+                env["BASH"] = shellPath
             }
             let shimReport = installHostShellShim()
             syncAuthFromAlpine(into: home)
