@@ -772,11 +772,14 @@ enum NanoMuseNativeRuntime {
         var signed = 0
         // 单个文件 > 64 MB 时签名工具很容易被 jetsam 杀掉（SIGKILL/137），
         // 而且 deb 里的大二进制本来就带签名，先跳过、交给"运行探测"判断。
+        // 先试大文件；只有大文件确实签失败后，才跳过后续大文件。
+        // 否则主程序（235 MB）永远签不到，仍然 EBADEXEC。
         let sizeLimit = 64 * 1024 * 1024
         var skippedBig = 0
+        var bigFailed = false
         for url in targets {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if size > sizeLimit { skippedBig += 1; continue }
+            if size > sizeLimit && bigFailed { skippedBig += 1; continue }
             var ok = false
             if hasEntitlements {
                 let entitled = await Task.detached(priority: .utility) {
@@ -795,7 +798,15 @@ enum NanoMuseNativeRuntime {
                 }.value
                 ok = adhoc.exitCode == 0
             }
-            if ok { signed += 1 }
+            if ok {
+                signed += 1
+                if size > sizeLimit {
+                    await log.add("  已签大文件：\(url.lastPathComponent) \(size / 1048576) MB")
+                }
+            } else if size > sizeLimit {
+                bigFailed = true
+                await log.add("  大文件签名失败：\(url.lastPathComponent) \(size / 1048576) MB")
+            }
         }
         if skippedBig > 0 {
             await log.add("  跳过 \(skippedBig) 个超过 64 MB 的文件（避免签名工具被系统杀掉）")
