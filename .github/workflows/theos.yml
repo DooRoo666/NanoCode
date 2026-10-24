@@ -1,0 +1,98 @@
+name: theos
+
+# 在 CI 的 macOS 上跑 Theos —— 绕开「iOS 禁止 fork」这条硬边界。
+#
+# 为什么必须放这里：Theos 的每一步（make / clang / ldid / dm.pl）都要 fork 子进程，
+# 而 iOS SDK 把 fork() 标成 unavailable，宿主上连 `make` 的第一条规则都起不来。
+# macOS runner 没有这个限制，所以把编译搬到云端，设备只负责装产出的 .deb。
+#
+# 用法：
+#   · 把 Theos 工程放进 tweaks/<你的工程>/（要有 Makefile、control、源码）
+#   · push 到 main，或手动 Run workflow 并填目录
+#   · 跑完在 Actions → 本次运行 → Artifacts 下载 `theos-deb`
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_dir:
+        description: "Theos 工程目录（含 Makefile）"
+        required: false
+        default: "tweaks/hello"
+      sdk:
+        description: "iPhoneOS SDK 版本"
+        required: false
+        default: "16.5"
+  push:
+    branches: [main]
+    paths:
+      - "tweaks/**"
+      - ".github/workflows/theos.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: theos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deb:
+    name: theos → .deb
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      PACKAGE_DIR: ${{ inputs.package_dir || 'tweaks/hello' }}
+      SDK_VERSION: ${{ inputs.sdk || '16.5' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain（ldid / xz）
+        run: brew install ldid xz
+
+      - name: Theos
+        run: |
+          set -euo pipefail
+          THEOS_DIR="$RUNNER_TEMP/theos"
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$THEOS_DIR"
+          echo "THEOS=$THEOS_DIR" >> "$GITHUB_ENV"
+          echo "$THEOS_DIR/bin" >> "$GITHUB_PATH"
+          "$THEOS_DIR/bin/theos" --version || true
+
+      - name: iPhoneOS SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$THEOS/sdks"
+          NAME="iPhoneOS${SDK_VERSION}.sdk"
+          if [ ! -d "$THEOS/sdks/$NAME" ]; then
+            curl -fsSL -o /tmp/sdk.tar.xz \
+              "https://github.com/theos/sdks/releases/download/master-146e41f/${NAME}.tar.xz"
+            tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks"
+          fi
+          ls -1 "$THEOS/sdks"
+
+      - name: Build package
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE_DIR"
+          echo "== 工程: $(pwd) =="
+          ls -la
+          make package FINALPACKAGE=1 DEBUG=0
+          echo "== 产物 =="
+          find . -name '*.deb' -maxdepth 3 -exec ls -lh {} \;
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: theos-deb
+          path: |
+            **/packages/*.deb
+            **/*.deb
+          if-no-files-found: error
+
+      - name: Log excerpt on failure
+        if: failure()
+        run: |
+          echo "构建失败。常见原因："
+          echo "  1) Makefile 的 TARGET 写的 SDK 与下载的 ${SDK_VERSION} 不一致"
+          echo "  2) control 里 Architecture 与 ARCHS 不匹配（rootless 用 iphoneos-arm64）"
+          echo "  3) 工程缺 $(THEOS)/makefiles 的 include"

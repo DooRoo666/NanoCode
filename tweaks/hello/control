@@ -1,0 +1,9 @@
+Package: com.nanocode.hellotweak
+Name: HelloTweak
+Version: 0.0.1
+Architecture: iphoneos-arm64
+Description: Theos CI 自检用最小 tweak（验证 CI 能编译并产出可安装 deb）
+Maintainer: NanoCode
+Author: NanoCode
+Section: Tweaks
+Depends: mobilesubstrate
