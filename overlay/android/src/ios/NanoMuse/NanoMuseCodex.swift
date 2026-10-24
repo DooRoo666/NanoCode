@@ -103,7 +103,7 @@ public enum NanoMuseCodex {
         "https://github.com/openai/codex/releases/latest/download/codex-aarch64-unknown-linux-musl.tar.gz"
 
     /// 面板构建标记：装完新包先看这一行，确认跑的是新代码
-    public static let buildTag = "r4"
+    public static let buildTag = "r5"
 
     /// Alpine 内的安装路径
     public static let binaryPath = "/usr/local/bin/codex"
@@ -581,7 +581,11 @@ public enum NanoMuseCodex {
         // 否则会出现：Alpine 的 musl 程序一跑就崩，codex_exec 却一直往那条路走。
         let alpineUsable = (current.alpinePath != nil) && current.alpineRuns
         if !alpineUsable, let native = nativeBinary() {
-            var args = ["exec", "--skip-git-repo-check"]
+            // `exec` 默认是 read-only 沙箱（在 macOS 上走 seatbelt，iOS 没有这层，
+            // 结果就是命令跑不动、写不了文件 → 看起来"能起但读不到系统数据"）。
+            // 这个 App 本身就是边界（TrollStore 带 no-sandbox / platform-application），
+            // 所以显式关掉 codex 自己的沙箱与审批。已在该二进制里核对过此 flag 存在。
+            var args = ["exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
             args.append(contentsOf: extraArgs)
             args.append(effectivePrompt)
 
@@ -595,6 +599,24 @@ public enum NanoMuseCodex {
                 try? FileManager.default.createDirectory(at: home.appendingPathComponent(sub),
                                                          withIntermediateDirectories: true)
             }
+            // codex 执行命令要靠 shell；iOS 上没有 /bin/sh。
+            // 把随包的 bash.real 以 bash / sh 两个名字软链进容器的 bin/，并置于 PATH 前。
+            let binDir = home.appendingPathComponent("bin", isDirectory: true)
+            let bashPath = NanoMuseHelperRunner.path("bash.real")
+            if FileManager.default.isExecutableFile(atPath: bashPath) {
+                for alias in ["bash", "sh"] {
+                    let linkPath = binDir.appendingPathComponent(alias).path
+                    if !FileManager.default.fileExists(atPath: linkPath) {
+                        try? FileManager.default.createSymbolicLink(atPath: linkPath,
+                                                                   withDestinationPath: bashPath)
+                    }
+                }
+            }
+            env["PATH"] = [
+                binDir.path,
+                NanoMuseHelperRunner.helpersDirectory,
+                "/usr/bin", "/bin", "/usr/sbin", "/sbin",
+            ].joined(separator: ":")
             syncAuthFromAlpine(into: home)
             if let apiKey, !apiKey.isEmpty { env["OPENAI_API_KEY"] = apiKey }
             if let baseURL, !baseURL.isEmpty { env["OPENAI_BASE_URL"] = baseURL }
