@@ -172,11 +172,17 @@ public enum NanoMuseCodex {
             guard let enumerator = FileManager.default.enumerator(at: root,
                                                                  includingPropertiesForKeys: [.fileSizeKey],
                                                                  options: []) else { continue }
+            // deb 里有 usr/bin/codex（52 KB 启动器，硬编码 /var/jb 路径）
+            // 和 usr/libexec/codex/codex（235 MB 真二进制）→ 取最大的
+            var candidates: [(path: String, size: Int)] = []
             for case let url as URL in enumerator {
                 guard url.lastPathComponent == "codex" else { continue }
                 guard FileManager.default.isExecutableFile(atPath: url.path) else { continue }
                 let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                return (url.path, size)
+                candidates.append((url.path, size))
+            }
+            if let best = candidates.max(by: { $0.size < $1.size }) {
+                return (best.path, best.size)
             }
         }
         return nil

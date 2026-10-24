@@ -103,12 +103,16 @@ enum NanoMuseNativeRuntime {
 
         let destination = directory(for: package.id)
 
-        // ---- 下载 / 校验 / 解包 ----
-        // 决策依据（真机实测）：Swift 往 rootfs 目录写文件后，guest 里只能看到目录、
-        // 看不到文件（`total 0`）——iSH 的 fakefs 只认 meta.db 里有记录的条目。
-        // 反过来，guest 自己创建的文件是**真实宿主文件**，Swift 一定能读到。
-        // 所以 .deb 一律交给 Alpine：下载、ar 拆包、zstd 解压、tar 解文件。
-        if package.archiveURL.lowercased().hasSuffix(".deb") {
+        // ---- 已装则跳过下载与解包 ----
+        let marker = destination.appendingPathComponent(".installed")
+        let alreadyInstalled = FileManager.default.fileExists(atPath: marker.path)
+        if alreadyInstalled {
+            await log.add("STEP 2-4/5 跳过：已安装（只重新签名与探测）")
+            await log.setPhase("已安装，跳过下载")
+        } else if package.archiveURL.lowercased().hasSuffix(".deb") {
+            // 决策依据（真机实测）：Swift 往 rootfs 写文件后 guest 看不到（只有目录、`total 0`），
+            // 因为 iSH 的 fakefs 只认 meta.db 里登记过的条目；反过来 guest 建的文件是真实宿主文件。
+            // 所以 .deb 一律交给 Alpine：下载（带缓存）、ar 拆包、zstd 解压、tar 解文件。
             guard await installViaAlpine(package, proxies: proxies,
                                          destination: destination, log: log) else {
                 await log.add("ERR Alpine 端下载/解包未完成")
@@ -152,29 +156,52 @@ enum NanoMuseNativeRuntime {
 
         let entries = (try? FileManager.default.contentsOfDirectory(atPath: destination.path)) ?? []
         await log.add("  内容：\(entries.prefix(6).joined(separator: " "))")
-        await normalizeSingleLevel(destination: destination, log: log)
+        // .deb 的 var/jb/... 是正常布局，不能"归一化"：
+        // usr/bin/codex 是硬编码 /var/jb 的启动器，真二进制在 usr/libexec/codex/。
+        if !package.archiveURL.lowercased().hasSuffix(".deb"), !alreadyInstalled {
+            await normalizeSingleLevel(destination: destination, log: log)
+        }
 
-        // ---- 权限 / 签名 / 探测 ----
+        // 把 deb 自带的 config.toml 作为基础配置（file_opener=none / apps=false 等）
+        seedCodexConfig(from: destination, log: log)
+
+        // ---- 权限 / 探测 / 签名 ----
         await log.add("STEP 5/5 权限与探测")
-        await log.setPhase("签名与探测")
+        await log.setPhase("探测与签名")
         let executables = makeExecutable(destination)
         await log.add("  可执行文件：\(executables) 个")
 
-        let signed = await attemptSign(destination, log: log)
-        await log.add("  签名：\(signed) 个")
+        // 先直接跑：deb 里的二进制本来就带签名，很多情况下不需要重签
+        var runnable = false
+        if let binary = codexBinary(in: destination) {
+            await log.add("  主程序：\(binary.path)")
+            let probe = await runProbe(binary.path, arguments: ["--version"])
+            await log.add("  --version → rc=\(probe.code)")
+            for line in probe.output.split(separator: "\n").prefix(3) {
+                await log.add("    \(line)")
+            }
+            runnable = probe.code == 0
+        } else {
+            await log.add("  未找到 codex 主程序")
+        }
 
-        try? Data("\(package.sha256)\n".utf8)
-            .write(to: destination.appendingPathComponent(".installed"))
-
-        if let binary = probeBinary(package: package, root: destination) {
-            let output = await probe(binary: binary, arguments: package.probeArguments)
-            await log.add("  探测输出：\(String(output.prefix(200)))")
-            if let expected = package.probeContains, !expected.isEmpty {
-                await log.add(output.contains(expected) ? "  probe 通过" : "  probe 未匹配（仍算安装完成）")
+        if !runnable {
+            await log.add("  直接运行未通过，尝试签名后重试")
+            let signed = await attemptSign(destination, log: log)
+            await log.add("  签名：\(signed) 个")
+            if let binary = codexBinary(in: destination) {
+                let again = await runProbe(binary.path, arguments: ["--version"])
+                await log.add("  重试 --version → rc=\(again.code)")
+                for line in again.output.split(separator: "\n").prefix(3) {
+                    await log.add("    \(line)")
+                }
+                runnable = again.code == 0
             }
         } else {
-            await log.add("  （清单未给探测命令）")
+            await log.add("  无需重签（原签名可用）")
         }
+
+        try? Data("\(package.sha256)\n".utf8).write(to: marker)
         await log.add("STEP done")
         await log.setPhase("完成")
         await log.setProgress(1)
@@ -211,23 +238,37 @@ enum NanoMuseNativeRuntime {
         apk add --no-cache curl tar zstd >/dev/null 2>&1 || true
         command -v zstd >/dev/null 2>&1 || { echo NO_ZSTD; exit 11; }
 
+        CACHE=/root/.nanocodex-cache
+        mkdir -p "$CACHE"
+        CACHED="$CACHE/__SHA__.deb"
         OK=0
-        for U in __URLS__; do
-          echo "TRY $U"
-          ( curl -fL --retry 1 --connect-timeout 20 -o pkg.deb "$U" 2>/dev/null ) &
-          CPID=$!
-          while kill -0 $CPID 2>/dev/null; do
+        if [ -s "$CACHED" ]; then
+          CSZ=$(stat -c %s "$CACHED" 2>/dev/null || echo 0)
+          if [ "$CSZ" -gt 1000000 ]; then
+            echo "CACHE_HIT 复用已下载的包（$CSZ bytes）"
+            cp "$CACHED" pkg.deb && OK=1
+          fi
+        fi
+        if [ "$OK" != "1" ]; then
+          for U in __URLS__; do
+            echo "TRY $U"
+            ( curl -fL --retry 1 --connect-timeout 20 -o pkg.deb "$U" 2>/dev/null ) &
+            CPID=$!
+            while kill -0 $CPID 2>/dev/null; do
+              SZ=$(stat -c %s pkg.deb 2>/dev/null || echo 0)
+              echo "BYTES $SZ __TOTAL__"
+              sleep 1
+            done
+            wait $CPID && OK=1
             SZ=$(stat -c %s pkg.deb 2>/dev/null || echo 0)
             echo "BYTES $SZ __TOTAL__"
-            sleep 1
+            if [ "$OK" = "1" ] && [ "$SZ" -gt 1000000 ]; then break; fi
+            OK=0
           done
-          wait $CPID && OK=1
-          SZ=$(stat -c %s pkg.deb 2>/dev/null || echo 0)
-          echo "BYTES $SZ __TOTAL__"
-          if [ "$OK" = "1" ] && [ "$SZ" -gt 1000000 ]; then break; fi
-          OK=0
-        done
-        [ "$OK" = "1" ] || { echo NO_DOWNLOAD; exit 12; }
+          [ "$OK" = "1" ] || { echo NO_DOWNLOAD; exit 12; }
+          cp pkg.deb "$CACHED" 2>/dev/null || true
+          echo "CACHE_SAVED $(stat -c %s "$CACHED" 2>/dev/null || echo 0) bytes"
+        fi
 
         echo "SIZE=$(stat -c %s pkg.deb)"
         echo "SHA256=$(sha256sum pkg.deb | cut -d' ' -f1)"
@@ -255,6 +296,7 @@ enum NanoMuseNativeRuntime {
             .replacingOccurrences(of: "__GUEST__", with: guest)
             .replacingOccurrences(of: "__URLS__", with: urls)
             .replacingOccurrences(of: "__TOTAL__", with: String(total))
+            .replacingOccurrences(of: "__SHA__", with: package.sha256.isEmpty ? "unknown" : package.sha256)
 
         await log.add("STEP 2-4/5 Alpine 端下载并解包")
         await log.setPhase("Alpine 下载中…")
@@ -312,6 +354,44 @@ enum NanoMuseNativeRuntime {
                                               to: destination.appendingPathComponent(child))
         }
         try? FileManager.default.removeItem(at: inner)
+    }
+
+    /// 找运行时里的 codex 主程序：取体积最大的那个（deb 里 usr/bin/codex 只是 52 KB 启动器）
+    static func codexBinary(in root: URL) -> (path: String, size: Int)? {
+        guard let enumerator = FileManager.default.enumerator(at: root,
+                                                             includingPropertiesForKeys: [.fileSizeKey],
+                                                             options: []) else { return nil }
+        var candidates: [(path: String, size: Int)] = []
+        for case let url as URL in enumerator {
+            guard url.lastPathComponent == "codex" || url.lastPathComponent == "codex-code-mode-host" else { continue }
+            guard FileManager.default.isExecutableFile(atPath: url.path) else { continue }
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            candidates.append((url.path, size))
+        }
+        return candidates.max(by: { $0.size < $1.size })
+    }
+
+    /// 用原生 posix_spawn 跑一次探测（同时验证签名与依赖）
+    static func runProbe(_ path: String, arguments: [String]) async -> (code: Int32, output: String) {
+        let result = await Task.detached(priority: .userInitiated) {
+            NanoMuseHelperRunner.run(path, arguments: arguments, timeout: 60)
+        }.value
+        return (result.exitCode, result.output)
+    }
+
+    /// 把 deb 自带的 etc/codex/config.toml 复制到 CODEX_HOME 作为基础配置
+    private static func seedCodexConfig(from destination: URL, log: Log) {
+        let home = NanoMuseCodex.codexHome()
+        let target = home.appendingPathComponent("config.toml")
+        guard !FileManager.default.fileExists(atPath: target.path) else { return }
+        let candidates = ["var/jb/etc/codex/config.toml", "etc/codex/config.toml"]
+        for rel in candidates {
+            let source = destination.appendingPathComponent(rel)
+            if FileManager.default.fileExists(atPath: source.path) {
+                try? FileManager.default.copyItem(at: source, to: target)
+                return
+            }
+        }
     }
 
     // MARK: - 下载（直连 → 代理回退）

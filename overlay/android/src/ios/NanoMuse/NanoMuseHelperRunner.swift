@@ -89,10 +89,30 @@ enum NanoMuseHelperRunner {
         }
 
         let output = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
-        let code: Int32 = (status & 0x7f) == 0 ? (status >> 8) & 0xff : -1
-        let header = killed ? "[超时 \(Int(timeout))s，已终止]\n" : ""
+        let signal = status & 0x7f
+        let code: Int32 = signal == 0 ? (status >> 8) & 0xff : 128 + signal
+        var header = ""
+        if killed {
+            header = "[超时 \(Int(timeout))s，已终止]\n"
+        } else if signal != 0 {
+            header = "[被信号 \(signal) 终止：\(signalName(signal))]\n"
+        }
         return Result(exitCode: code, output: header + output,
                       duration: Date().timeIntervalSince(started))
+    }
+
+    private static func signalName(_ signal: Int32) -> String {
+        switch signal {
+        case 4: return "SIGILL（非法指令，常见于架构不匹配）"
+        case 5: return "SIGTRAP"
+        case 6: return "SIGABRT"
+        case 9: return "SIGKILL（可能被 AMFI/看门狗杀掉，常见于签名不被接受）"
+        case 10: return "SIGBUS"
+        case 11: return "SIGSEGV"
+        case 12: return "SIGSYS（系统调用被拒）"
+        case 31: return "SIGSYS(31)"
+        default: return "signal \(signal)"
+        }
     }
 
     // MARK: - C 字符串
