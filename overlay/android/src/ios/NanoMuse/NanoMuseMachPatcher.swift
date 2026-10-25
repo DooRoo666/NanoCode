@@ -26,19 +26,24 @@ enum NanoMuseMachPatcher {
     private static let MH_MAGIC_64: UInt32 = 0xfeedfacf
     private static let FAT_MAGIC_BE: UInt32 = 0xcafebabe
 
+    struct Result {
+        var found = 0
+        var patched = 0
+        var skipped = 0        // 匹配到但新路径更长，放不下
+    }
+
     /// 把 path 里所有指向 needle 的 dylib 依赖改成 replacement。
-    /// - Returns: 改动了几处（0 表示没匹配到）
     @discardableResult
-    static func repoint(path: String, matching needle: String, to replacement: String) throws -> Int {
+    static func repoint(path: String, matching needle: String, to replacement: String) throws -> Result {
         guard var data = FileManager.default.contents(atPath: path) else {
             throw PatchError(message: "读不到 \(path)")
         }
-        var total = 0
+        var result = Result()
 
         // FAT：逐片处理
         if data.be32(0) == FAT_MAGIC_BE || data.le32(0) == FAT_MAGIC_BE {
             let nArch = Int(data.be32(4))
-            guard nArch > 0 && nArch < 32 else { return 0 }
+            guard nArch > 0 && nArch < 32 else { return result }
             for i in 0..<nArch {
                 let base = 8 + i * 20
                 guard base + 20 <= data.count else { break }
@@ -46,28 +51,31 @@ enum NanoMuseMachPatcher {
                 let size = Int(data.be32(base + 12))
                 guard offset > 0, size > 0, offset + size <= data.count else { continue }
                 var slice = data.subdata(in: offset..<(offset + size))
-                let n = patchSlice(&slice, needle: needle, replacement: replacement)
-                if n > 0 {
+                var r = Result()
+                patchSlice(&slice, needle: needle, replacement: replacement, result: &r)
+                if r.patched > 0 {
                     data.replaceSubrange(offset..<(offset + size), with: slice)
-                    total += n
                 }
+                result.found += r.found
+                result.patched += r.patched
+                result.skipped += r.skipped
             }
         } else {
-            total = patchSlice(&data, needle: needle, replacement: replacement)
+            patchSlice(&data, needle: needle, replacement: replacement, result: &result)
         }
 
-        if total > 0 {
+        if result.patched > 0 {
             try data.write(to: URL(fileURLWithPath: path))
         }
-        return total
+        return result
     }
 
     /// 处理单个 thin Mach-O
-    private static func patchSlice(_ data: inout Data, needle: String, replacement: String) -> Int {
-        guard data.le32(0) == MH_MAGIC_64 || data.le32(0) == 0xcffaedfe else { return 0 }
+    private static func patchSlice(_ data: inout Data, needle: String, replacement: String,
+                                   result: inout Result) {
+        guard data.le32(0) == MH_MAGIC_64 || data.le32(0) == 0xcffaedfe else { return }
         let ncmds = Int(data.le32(16))
         var off = 32
-        var patched = 0
         for _ in 0..<ncmds {
             guard off + 8 <= data.count else { break }
             let cmd = data.le32(off)
@@ -79,20 +87,21 @@ enum NanoMuseMachPatcher {
                 if abs > 0 && abs < data.count {
                     let old = readCString(data, at: abs)
                     if old.contains(needle) {
+                        result.found += 1
                         let newBytes = Array(replacement.utf8)
-                        let room = old.utf8.count            // 可写入的字节数（不含结尾 NUL 的余量）
+                        let room = old.utf8.count
                         if newBytes.count <= room {
                             for k in 0..<room { data[abs + k] = 0 }
                             for (k, b) in newBytes.enumerated() { data[abs + k] = b }
-                            // 结尾保持 NUL
-                            patched += 1
+                            result.patched += 1
+                        } else {
+                            result.skipped += 1
                         }
                     }
                 }
             }
             off += cmdsize
         }
-        return patched
     }
 
     private static func readCString(_ data: Data, at offset: Int) -> String {

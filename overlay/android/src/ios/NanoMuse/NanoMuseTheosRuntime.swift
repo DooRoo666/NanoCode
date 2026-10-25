@@ -459,15 +459,25 @@ enum NanoMuseTheosRuntime {
                                  log: @escaping (String) -> Void) async -> Int {
         let targets = machOs(under: root)
         var changed = 0
-        await withTaskGroup(of: Int.self) { group in
-            for path in targets {
-                group.addTask {
-                    (try? NanoMuseMachPatcher.repoint(path: path,
-                                                       matching: "libiosexec",
-                                                       to: "/usr/lib/libSystem.B.dylib")) ?? 0
-                }
+        var found = 0
+        var skipped = 0
+        var errors: [String] = []
+        for path in targets {
+            do {
+                let r = try NanoMuseMachPatcher.repoint(path: path,
+                                                        matching: "libiosexec",
+                                                        to: "/usr/lib/libSystem.B.dylib")
+                found += r.found
+                skipped += r.skipped
+                changed += r.patched
+            } catch {
+                if errors.count < 3 { errors.append("\(relative(path, to: root)): \(error.localizedDescription)") }
             }
-            for await n in group { changed += n }
+        }
+        log("  扫描 \(targets.count) 个 Mach-O，命中 \(found) 处，改写 \(changed) 处，跳过 \(skipped) 处")
+        if !errors.isEmpty {
+            log("  重定向错误（最多列 3 个）：")
+            for e in errors { log("    " + e) }
         }
         return changed
     }
