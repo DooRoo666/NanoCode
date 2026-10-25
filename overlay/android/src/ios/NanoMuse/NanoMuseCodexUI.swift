@@ -899,8 +899,8 @@ struct NanoMuseCodexView: View {
     private func removeTool(_ spec: NanoMuseToolSpec) {
         logLines.removeAll()
         Task {
-            busy = true
-            defer { busy = false }
+            runningTool = spec.id
+            defer { runningTool = nil }
             append("===== 卸载 \(spec.title) =====")
 
             if NanoMuseNativeRuntime.isInstalled(spec.id) {
