@@ -148,6 +148,28 @@ struct NanoMuseCodexView: View {
                     for line in report.split(separator: "\n") { append(String(line)) }
                 }
             }
+            NanoMuseActionRow(title: "准备 TheosRuntime（定位 + 重签 dylib 权限）", chevron: false) {
+                guard !busy, !nativeRunning else { return }
+                logLines.removeAll()
+                nativeLog.clear()
+                append("===== TheosRuntime 准备 =====")
+                Task {
+                    guard let root = NanoMuseTheosRuntime.locate() else {
+                        append("ERR 没找到 TheosRuntime")
+                        append("扫描过：" )
+                        for p in NanoMuseTheosRuntime.searchRoots() { append("  · " + p) }
+                        append("先在你的 MT-Agent 里启用/下载 Theos，再回来点这个。")
+                        return
+                    }
+                    append("找到：\(root)")
+                    let report = await Task.detached(priority: .userInitiated) {
+                        await NanoMuseTheosRuntime.resign(at: root)
+                    }.value
+                    for line in report.lines { append(line) }
+                    let env = NanoMuseTheosRuntime.environment(for: root)
+                    append("PATH = \(env["PATH"] ?? "")")
+                }
+            }
             NanoMuseRowDivider()
             HStack(spacing: 8) {
                 Image(systemName: "shippingbox")
