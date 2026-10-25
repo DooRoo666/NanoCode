@@ -20,7 +20,8 @@ enum NanoMuseHostShellTool {
             The shell is nsh (forkless, posix_spawn based): pipes `a | b`, redirections `> >> < 2> 2>&1`, \
             `;` `&&` `||`, leading `!`, `$VAR` `${VAR}` `$?` `$$`, `VAR=value`, `$( )`, globs, `cd`, `export`, \
             `test` / `[`, plus onPath helpers (cat, ls, grep, tar, xxd, sed … from ca-filetool) and codex-sign \
-            are all supported. Not supported: `( )` subshell, `&` background, `for` / `if` / functions. \
+            are all supported; `for` / `while` / `if` / `case` scripts are delegated to bash.real internally. \
+            Not supported: `( )` subshell and `&` background jobs. \
             For Linux tooling (git/python/apk) keep using shell_execute instead.
             """,
             parameters: [

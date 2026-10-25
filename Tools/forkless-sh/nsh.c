@@ -825,6 +825,49 @@ static int eval(char *line) {
  *
  * 这里按字符拆标志：遇到 c 就取下一个参数当命令串，其余（l/i/e/x/s/u…）
  * 对我们没有语义，直接忽略——nsh 没有 login 概念，errexit/xtrace 也没实现。 */
+/* 复杂脚本（for / while / if / case …）委托给同目录的 bash.real。
+ *
+ * nsh 是"单行执行器"，没有控制流；而 iOS 上 bash 的管道/重定向会 SIGBUS。
+ * 两者互补：控制流交给 bash（它只用内建、不 fork），管道/重定向留在 nsh。
+ * 找不到 bash.real 时返回 -1，调用方继续用 nsh 自己解析（会给出明确报错）。
+ */
+static int delegate_to_bash(const char *script) {
+    const char *p = script;
+    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+    static const char *kw[] = { "for ", "while ", "until ", "if ", "case ", "select ", "function " };
+    int match = 0;
+    for (size_t i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
+        size_t n = strlen(kw[i]);
+        if (strncmp(p, kw[i], n) == 0) { match = 1; break; }
+    }
+    if (!match) return -1;
+
+    char path[PATH_MAX];
+    const char *self = self_path();
+    if (!self || strlen(self) >= sizeof(path)) return -1;
+    strcpy(path, self);
+    char *slash = strrchr(path, '/');
+    if (!slash) return -1;
+    strcpy(slash + 1, "bash.real");
+    if (access(path, X_OK) != 0) return -1;
+
+    char *argv[4];
+    argv[0] = path;
+    argv[1] = (char *)"-c";
+    argv[2] = (char *)script;
+    argv[3] = NULL;
+
+    pid_t pid = 0;
+    if (posix_spawn(&pid, path, NULL, NULL, argv, environ) != 0) return -1;
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { /* retry */ }
+    if (WIFSIGNALED(st)) {
+        fprintf(stderr, "nsh: bash.real 被信号 %d 终止（脚本里有管道/重定向时会这样）\n", WTERMSIG(st));
+        return 128 + WTERMSIG(st);
+    }
+    return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
 int main(int argc, char **argv) {
     char *script = NULL;
     int i = 1;
@@ -861,6 +904,9 @@ int main(int argc, char **argv) {
                         "forkless shell：管道/重定向/序列均用 posix_spawn 实现，不调用 fork。\n");
         return 2;
     }
+
+    int delegated = delegate_to_bash(script);
+    if (delegated >= 0) return delegated;
 
     char *work = strdup(script);
     if (!work) return 1;

@@ -73,8 +73,8 @@ iOS 的 SDK 把 `fork()` 标为 unavailable，而 bash 的管道 / 重定向 / �
 | 参数 `-c` / `-lc` / `-ec` / `-i` | 按字符解析标志位 | ✅ |
 | `test` / `[`（`-e -f -d -x -r -w -s -z -n` / `=` `!=` / `-eq -ne -lt -gt -le -ge`） | 内建 | ✅ |
 | 行首 `!` 取反 | 顶层切分后对结果取反 | ✅ |
-| 子 shell `( )` / 后台 `&` | —— | ❌ 仍不支持 |
-| `for` / `if` / 函数 | —— | ❌ 仍不支持（脚本请用 bash.real，但别写管道） |
+| `for` / `while` / `until` / `if` / `case` / `function` | 整段委托给同目录 `bash.real -c`（控制流只用内建，不 fork） | ✅ |
+| `( )` 子 shell / `&` 后台 | —— | ❌ 仍不支持 |
 
 > 构建时如果 nsh 编译成功，`Helpers/{sh,bash,bash-codex}` 会自动改指向 nsh
 > （MT 原版指向 bash.real，一遇管道就 SIGBUS）；编译失败则保持原链接。
