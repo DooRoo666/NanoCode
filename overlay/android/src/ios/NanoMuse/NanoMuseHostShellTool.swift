@@ -36,12 +36,22 @@ enum NanoMuseHostShellTool {
     }
 
     static func execute(command: String, timeout: TimeInterval) async -> Outcome {
-        guard NanoMuseHelperRunner.exists("bash.real") else {
+        let nsh = NanoMuseHelperRunner.path("nsh")
+        let bash = NanoMuseHelperRunner.path("bash.real")
+        let hasNsh = FileManager.default.isExecutableFile(atPath: nsh)
+        let hasBash = FileManager.default.isExecutableFile(atPath: bash)
+        guard hasNsh || hasBash else {
             return Outcome(exitCode: 127,
-                           text: "缺少随包的 bash.real（构建时需要 vendor/helpers），无法在宿主层执行。")
+                           text: "缺少随包的 nsh / bash.real（构建时需要 vendor/helpers），无法在宿主层执行。")
         }
+        // 为什么优先 nsh：
+        // bash.real 执行管道 `|`、重定向 `>`、子 shell `( )`、命令替换 `$( )`、后台 `&`
+        // 全靠 fork()，而 iOS 上这条路径必然 SIGBUS（Bus error 10）。
+        // 结果就是 host_exec 只要命令里有 `| head` 就整个崩掉。
+        // nsh 用 posix_spawn 实现同样的语义，全程不 fork，所以默认走它。
+        let shell = hasNsh ? nsh : bash
         let result = await Task.detached(priority: .userInitiated) {
-            NanoMuseHelperRunner.run("bash.real", arguments: ["-lc", command], timeout: timeout)
+            NanoMuseHelperRunner.run(shell, arguments: ["-lc", command], timeout: timeout)
         }.value
         let body = result.output.isEmpty ? "（无输出）" : result.output
         return Outcome(exitCode: result.exitCode, text: body)
