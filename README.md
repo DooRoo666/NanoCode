@@ -88,6 +88,27 @@ iOS 的 SDK 把 `fork()` 标为 unavailable，而 bash 的管道 / 重定向 / �
 2. **必须进 PATH**：`NanoMuseCodex` 启动 codex 时会把 runtime 的 `usr/bin` 与
    `usr/lib` 接到 `PATH` / `DYLD_*`，否则 codex 里敲 `clang` 永远 127。
 
+### 运行时只属于自己（不再借用别的 App）
+
+`NanoMuseTheosRuntime` 只认**自己容器内**的三处：
+
+```
+Bundle.app/TheosRuntime              # 若将来直接打进 tipa
+Documents/TheosRuntime               # Files App 可直接投放
+<Library>/TheosRuntime               # 运行时安装器的正式位置
+```
+
+不再扫描 `Application Support/CodexApp/...` 或 `/var/jb` —— 那是别的 App / 系统越狱目录，
+写入等于改别人的文件，对方升级或清理就会失效。
+
+设置页「准备 TheosRuntime（安装 → 重签 → 自检）」是**一键全流程**：
+
+1. 读 `runtime-manifest.json` 里 `runtimes.theos.archive_parts`（5 个分片，约 224 MB），
+   直连失败自动走 `gh-proxy.org` / `ghproxy.net`，逐片写入并拼接；
+2. 用随包的 `ca-filetool`（argv[0] 分派成 `tar`）解包到 `<Library>/TheosRuntime`；
+3. 增量重签（`.nanomuse-resign.json`）；
+4. `smokeTest` 逐个跑 `clang-16 / make / ldid / dpkg-deb --version`，直接给 OK / FAIL。
+
 ### 重签是增量 + 自动的
 
 - 首次启动 codex（或 entitlements 变更后）会在**后台**把 runtime 里 373 个 Mach-O
