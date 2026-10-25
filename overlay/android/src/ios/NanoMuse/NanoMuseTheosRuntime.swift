@@ -19,6 +19,7 @@ enum NanoMuseTheosRuntime {
         var ok = false
         var root: String?
         var signed = 0
+        var skipped = 0
         var failed = 0
         var total = 0
         var lines: [String] = []
@@ -147,26 +148,24 @@ enum NanoMuseTheosRuntime {
         }
 
         for path in pending {
-            // dylib / framework 用 adhoc 模式：带 entitlements 会写成 App Store 风格的
-            // CD（含 CMS），AMFI 在**加载库**时按 Apple 锚点校验 → "code signature invalid"。
-            // 可执行文件仍用 entitlements（需要 no-sandbox / platform-application）。
+            // **库文件一律不动**。
+            // 实测：给 dylib 重签（无论 entitlements 还是 --adhoc-only）都会让
+            //   dyld: Library not loaded ... (code signature invalid)
+            // 而原始发布里 dylib 的签名本来就能被本机接受（缺的只是调用方的
+            // disable-library-validation）。所以只签可执行文件，库保持原样。
             let lower = path.lowercased()
             let isLibrary = lower.hasSuffix(".dylib") || lower.hasSuffix(".so")
                 || lower.contains(".framework/")
-            let args: [String] = isLibrary
-                ? ["--adhoc-only", path]
-                : ["--entitlements", ent, path]
-            var run = await Task.detached(priority: .userInitiated) {
-                NanoMuseHelperRunner.run("codex-sign", arguments: args, timeout: 120)
-            }.value
-            if run.exitCode != 0, isLibrary {
-                // adhoc 里用到的 Security API 可能在某些上下文不可用；回退到 entitlements
-                run = await Task.detached(priority: .userInitiated) {
-                    NanoMuseHelperRunner.run("codex-sign",
-                                             arguments: ["--entitlements", ent, path],
-                                             timeout: 120)
-                }.value
+            if isLibrary {
+                report.skipped += 1
+                marker.files[relative(path, to: root)] = fileStamp(path)
+                continue
             }
+            let run = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run("codex-sign",
+                                         arguments: ["--entitlements", ent, path],
+                                         timeout: 120)
+            }.value
             if run.exitCode == 0 {
                 report.signed += 1
                 marker.files[relative(path, to: root)] = fileStamp(path)
@@ -176,7 +175,7 @@ enum NanoMuseTheosRuntime {
             }
         }
         saveMarker(root, marker)
-        report.lines.append("完成：成功 \(report.signed)，跳过/失败 \(report.failed)")
+        report.lines.append("完成：重签 \(report.signed)，库跳过 \(report.skipped)，失败 \(report.failed)")
         report.ok = report.signed > 0
         if report.ok {
             report.lines.append("下一步：跑 clang-16 --version 验证 dylib 是否还会被拦。")
@@ -237,6 +236,26 @@ enum NanoMuseTheosRuntime {
         let url: String
         var expectedSize: Int = 0
     }
+
+    /// 固定使用**已验证可加载**的那个运行时发布。
+    ///
+    /// 背景：`runtime-manifest.json` 的 main 分支现在指向 runtime-theos-336408a626ac，
+    /// 它里面的 dylib 是 thin arm64、按本机的 AMFI 规则签名无效
+    /// （加载时报 "code signature invalid"）。而 MT-Agent 用的
+    /// runtime-theos-11caeba3c2d0 是 FAT 二进制，签名在本机能通过。
+    /// 这里直接钉住后者；清单只作为兜底。
+    static let pinnedRelease = "runtime-theos-11caeba3c2d0"
+    static let pinnedParts: [Part] = {
+        let base = "https://github.com/susu123oss/CodexApp-Runtime/releases/download/\(pinnedRelease)/TheosRuntime.tar.gz"
+        var list: [Part] = []
+        for i in 1...5 {
+            let name = "TheosRuntime.tar.gz.part0\(i)"
+            // 前 4 片各 48 MB，最后一片约 22 MB
+            let size = i < 5 ? 50_331_648 : 23_040_723
+            list.append(Part(name: name, url: base + ".part0\(i)", expectedSize: size))
+        }
+        return list
+    }()
 
     /// 从清单里取 theos 运行时的分片列表
     static func fetchParts() async throws -> [Part] {
@@ -405,8 +424,12 @@ enum NanoMuseTheosRuntime {
         }
         log("== 安装 TheosRuntime 到 \(installRoot) ==")
         do {
-            let parts = try await fetchParts()
-            log("清单分片：\(parts.count) 个")
+            var parts = pinnedParts
+            log("固定版本：\(pinnedRelease)（\(parts.count) 片）")
+            if parts.isEmpty {
+                parts = try await fetchParts()
+                log("清单分片：\(parts.count) 个")
+            }
             let archive = NSTemporaryDirectory() + "TheosRuntime.tar.gz"
             try await download(parts, to: archive, log: log)
             try await extract(archive, to: installRoot, log: log)
@@ -439,7 +462,7 @@ enum NanoMuseTheosRuntime {
 
     // MARK: - 增量标记
 
-    static let markerVersion = 2
+    static let markerVersion = 3
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {
