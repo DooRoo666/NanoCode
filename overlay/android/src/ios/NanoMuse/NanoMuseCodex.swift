@@ -633,6 +633,21 @@ public enum NanoMuseCodex {
             nshExec = (-1, "")
         }
 
+        // P10/P11：架构对照。同一份 fork 代码，分别编成 arm64 与 arm64e。
+        // arm64 能活 + arm64e 崩 → 根因是 arm64e 的 PAC/签名，不是内核禁 fork。
+        var forkArm64: (Int32, String) = (-1, "")
+        var forkArm64e: (Int32, String) = (-1, "")
+        if FileManager.default.isExecutableFile(atPath: NanoMuseHelperRunner.path("forktest-arm64")) {
+            forkArm64 = await run("[P10] fork 对照（arm64）", "forktest-arm64", [], keep: 3)
+        } else {
+            lines.append("[P10] 没有 forktest-arm64（未编译进来）")
+        }
+        if FileManager.default.isExecutableFile(atPath: NanoMuseHelperRunner.path("forktest-arm64e")) {
+            forkArm64e = await run("[P11] fork 对照（arm64e）", "forktest-arm64e", [], keep: 3)
+        } else {
+            lines.append("[P11] 没有 forktest-arm64e（未编译进来）")
+        }
+
         lines.append(forkFromMain())
         lines.append("---- 判读 ----")
 
@@ -667,6 +682,19 @@ public enum NanoMuseCodex {
                 lines.append("  · P7 rc=\(simpleExec.0) → bash 连简单命令都要 fork，codex 的 shell 完全不可用。")
             }
             lines.append("  → 执行类任务走 iSH（用户态模拟 fork），读系统数据走 host_fs（进程内，不 fork）。")
+            // 架构定性：这是整件事的关键判据
+            if forkArm64.0 == 0, forkArm64e.0 != 0 {
+                lines.append("  🔍 架构定性（推翻「内核禁 fork」）：arm64 的 fork 成功了（P10 rc=0），")
+                lines.append("     而同一份代码编成 arm64e 就崩（P11 rc=\(forkArm64e.0)）。")
+                lines.append("     根因是 arm64e 的指针认证 + adhoc 签名 → 子进程 cs_invalid_page → SIGBUS，")
+                lines.append("     不是内核拒绝。把 shell 换成 arm64 的 bash，管道/重定向/子 shell/make 全部能恢复。")
+            } else if forkArm64.0 == 0, forkArm64e.0 == 0 {
+                lines.append("  🔍 两个架构的 fork 都成功 → 那 bash.real 的 SIGBUS 是 bash 自身的问题，")
+                lines.append("     不是架构。换一个 arm64 bash 就能恢复全部能力。")
+            } else if forkArm64.0 != 0, forkArm64e.0 != 0, forkArm64.0 != -1 {
+                lines.append("  🔍 两个架构的 fork 都失败 → 内核确实拒绝对这些二进制 fork，")
+                lines.append("     与 TheosRuntime（Procursus arm64、签名方式不同）的差异在签名而非架构。")
+            }
             if nshExec.0 == 0, !nshExec.1.contains("No such file") {
                 lines.append("  ✅ P9 通过：随包 nsh 用 posix_spawn 跑通了管道（rc=0）。")
                 lines.append("     所以 codex 的 shell 现在能执行：单命令、管道、重定向、; && ||、cd、export、通配符。")

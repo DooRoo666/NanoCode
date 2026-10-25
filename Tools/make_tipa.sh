@@ -95,6 +95,27 @@ else
   echo "   (跳过：没有 nsh.c 或 xcrun)"
 fi
 
+echo "== 0b/4 编译 fork 对照实验（arm64 vs arm64e） =="
+# 同一份代码编两个架构：用来分辨「fork 被内核拒绝」还是「arm64e 的 PAC 让它崩」。
+FORKTEST_SRC="$ROOT/Tools/forkless-sh/forktest.c"
+if [ -f "$FORKTEST_SRC" ] && command -v xcrun >/dev/null 2>&1; then
+  SDKDIR2="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
+  if [ -n "$SDKDIR2" ]; then
+    for arch in arm64 arm64e; do
+      OUT="$TARGET/Helpers/forktest-$arch"
+      if xcrun --sdk iphoneos clang -arch "$arch" -miphoneos-version-min=15.0 \
+          -O1 -isysroot "$SDKDIR2" -o "$OUT" "$FORKTEST_SRC" 2>&1; then
+        chmod 0755 "$OUT"
+        echo "   forktest-$arch 编译完成"
+      else
+        echo "   warning: forktest-$arch 编译失败" >&2
+      fi
+    done
+  fi
+else
+  echo "   (跳过：没有 forktest.c 或 xcrun)"
+fi
+
 echo "== 0b/4 随包资源（Mermaid / cacert / models.json / 兜底提示词 / Notices） =="
 BUNDLE_SRC="$ROOT/vendor/bundle"
 if [ -d "$BUNDLE_SRC" ]; then
