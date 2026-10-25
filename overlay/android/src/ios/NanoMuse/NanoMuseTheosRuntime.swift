@@ -148,25 +148,28 @@ enum NanoMuseTheosRuntime {
         }
 
         for path in pending {
-            // **库文件一律不动**。
-            // 实测：给 dylib 重签（无论 entitlements 还是 --adhoc-only）都会让
-            //   dyld: Library not loaded ... (code signature invalid)
-            // 而原始发布里 dylib 的签名本来就能被本机接受（缺的只是调用方的
-            // disable-library-validation）。所以只签可执行文件，库保持原样。
+            // 优先用我们自己的 adhoc 签名器：
+            // codex-sign 的两种模式在本机都过不了 AMFI（CMS 被拒 / adhoc 报 -67048），
+            // 自研实现只写 SHA256 CodeDirectory，正是 TrollStore 装 App 用的格式。
+            // 可执行文件附带 entitlements（no-sandbox / platform-application），
+            // 库文件不需要 entitlements。
             let lower = path.lowercased()
             let isLibrary = lower.hasSuffix(".dylib") || lower.hasSuffix(".so")
                 || lower.contains(".framework/")
-            if isLibrary {
-                report.skipped += 1
-                marker.files[relative(path, to: root)] = fileStamp(path)
-                continue
+            var ok = false
+            do {
+                let ents: Data? = isLibrary ? nil : FileManager.default.contents(atPath: ent)
+                try NanoMuseMachSigner.sign(path: path, entitlements: ents)
+                ok = true
+            } catch {
+                // 回退：老路径（对个别 FAT 文件仍可能成功）
+                let args = isLibrary ? ["--adhoc-only", path] : ["--entitlements", ent, path]
+                let run = await Task.detached(priority: .userInitiated) {
+                    NanoMuseHelperRunner.run("codex-sign", arguments: args, timeout: 120)
+                }.value
+                ok = run.exitCode == 0
             }
-            let run = await Task.detached(priority: .userInitiated) {
-                NanoMuseHelperRunner.run("codex-sign",
-                                         arguments: ["--entitlements", ent, path],
-                                         timeout: 120)
-            }.value
-            if run.exitCode == 0 {
+            if ok {
                 report.signed += 1
                 marker.files[relative(path, to: root)] = fileStamp(path)
             } else {
@@ -455,14 +458,14 @@ enum NanoMuseTheosRuntime {
         guard await install(log: emit) else { return lines }
         guard let root = locate() else { emit("ERR 仍找不到 runtime"); return lines }
         let r = await resign(at: root)
-        lines.append(contentsOf: r.lines)
-        lines.append(contentsOf: await smokeTest(root: root))
+        for l in r.lines { emit(l) }
+        for l in await smokeTest(root: root) { emit(l) }
         return lines
     }
 
     // MARK: - 增量标记
 
-    static let markerVersion = 3
+    static let markerVersion = 4
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {
