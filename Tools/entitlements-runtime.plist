@@ -34,5 +34,10 @@
 	<key>com.apple.security.cs.disable-library-validation</key><true/>
 	<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
 	<key>dynamic-codesigning</key><true/>
+	<!-- MT-Agent 原版就有这条，我们之前误删了。
+	     48 位扩展地址空间：clang-16 / ld64 这类工具链要映射大量段，
+	     没有它会在大 mmap 时失败（表现成 "sandbox blocked mmap" 之类）。
+	     已确认它不由 fork 崩溃引起（os.fork / fork+exec 在 EVA 下都正常）。 -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key><true/>
 </dict>
 </plist>
