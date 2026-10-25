@@ -834,6 +834,11 @@ public enum NanoMuseCodex {
                     "-c", "model_providers.\(provider).wire_api=\"\(NanoMuseCodexSettings.wireAPI)\"",
                 ])
                 if let model, !model.isEmpty { args.append(contentsOf: ["-m", model]) }
+                // 思考强度（作为子代理时按任务复杂度调）
+                let effort = NanoMuseCodexSettings.reasoningEffort
+                if !effort.isEmpty {
+                    args.append(contentsOf: ["-c", "model_reasoning_effort=\"\(effort)\""])
+                }
             }
             args.append("--dangerously-bypass-approvals-and-sandbox")
             args.append("--skip-git-repo-check")
@@ -877,6 +882,12 @@ public enum NanoMuseCodex {
             // 用过一次，codex 自己的 PATH 完全不含它 —— 于是 codex 里敲 clang 永远 127，
             // 只能写全路径。这里把它接进 PATH / DYLD，codex 才算真的能编译。
             var runtimePath: [String] = []
+            // 越狱环境下优先用 /var/jb 的原生工具链（clang/make/ldid/dpkg-deb 都在里面），
+            // 它不需要我们下载的运行时，也不受纯巨魔的 dylib 沙盒限制。
+            if NanoMuseTheosRuntime.isJailbroken {
+                runtimePath += ["/var/jb/usr/bin", "/var/jb/bin", "/var/jb/usr/sbin", "/var/jb/sbin"]
+                env["THEOS"] = "/var/jb/opt/theos"
+            }
             if let rtRoot = NanoMuseTheosRuntime.locate() {
                 // 首次（或 entitlements 变更后）在后台把 runtime 重签一遍：
                 // 不重签 → clang-16 加载 libiosexec 时被 library validation 拦成

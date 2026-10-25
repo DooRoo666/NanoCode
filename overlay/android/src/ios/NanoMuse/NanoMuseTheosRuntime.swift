@@ -33,15 +33,35 @@ enum NanoMuseTheosRuntime {
     /// 写进去也等于改别人的文件。这里只认自己沙盒内的副本。
     static func ownRoots() -> [String] {
         var list: [String] = []
-        // ① App 包内（若将来把 runtime 直接打进 tipa）
+        // ① 越狱环境优先：/var/jb 里的 Procursus 工具链本来就齐（clang/make/ldid/dpkg-deb），
+        //    越狱后 dyldhook 生效，这些二进制能直接跑，不需要我们那张表。
+        if isJailbroken {
+            list.append("/var/jb")                 // PATH 里会拼 /usr/bin
+        }
+        // ② App 包内（若将来把 runtime 直接打进 tipa）
         list.append(Bundle.main.bundlePath + "/TheosRuntime")
         list.append(Bundle.main.resourcePath.map { $0 + "/TheosRuntime" } ?? "")
-        // ② 用户可直接投放的 Documents（Files App 可见）
+        // ③ 用户可直接投放的 Documents（Files App 可见）
         list.append(NanoMuseTipaBuilder.documentsURL().path + "/TheosRuntime")
-        // ③ 正式安装位置（运行时安装器解包到这里）
+        // ④ 正式安装位置（运行时安装器解包到这里）
         list.append(installRoot)
         return list.filter { !$0.isEmpty }
     }
+
+    /// 越狱是否生效：`/var/jb` 存在 **并且** 里面的 ldid 能跑。
+    /// 只看目录存在不够——留了残留目录但没激活越狱时，二进制会报 Bad executable。
+    static var isJailbroken: Bool {
+        cachedJailbroken
+    }
+
+    private static let cachedJailbroken: Bool = {
+        let fm = FileManager.default
+        let ldid = "/var/jb/usr/bin/ldid"
+        guard fm.fileExists(atPath: ldid), fm.isExecutableFile(atPath: ldid) else { return false }
+        // 真正 spawn 一次：越狱没激活时它会立刻失败
+        let r = NanoMuseHelperRunner.run(ldid, arguments: ["-h"], timeout: 20)
+        return r.exitCode == 0
+    }()
 
     /// 自己的安装根目录：`<Library>/TheosRuntime`
     static var installRoot: String { NSHomeDirectory() + "/Library/TheosRuntime" }
@@ -56,7 +76,7 @@ enum NanoMuseTheosRuntime {
         guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { return false }
         let probes = [
             "/usr/bin/make", "/usr/bin/clang", "/usr/bin/clang-16",
-            "/bin/make", "/usr/bin/ldid", "/usr/bin/dpkg-deb",
+            "/usr/bin/ldid", "/usr/bin/dpkg-deb", "/opt/theos/makefiles",
         ]
         for p in probes where fm.fileExists(atPath: path + p) { return true }
         return false
@@ -202,8 +222,11 @@ enum NanoMuseTheosRuntime {
     /// 轻量自检：确认工具链真的能起来（重签是否生效的最终判据）
     static func smokeTest(root: String) async -> [String] {
         var lines: [String] = ["== TheosRuntime 自检 =="]
+        // 越狱环境里是 usr/bin/clang（不是 clang-16），两种都试
+        let clangName = FileManager.default.isExecutableFile(atPath: root + "/usr/bin/clang-16")
+            ? "usr/bin/clang-16" : "usr/bin/clang"
         let probes: [(String, [String])] = [
-            ("usr/bin/clang-16", ["--version"]),
+            (clangName, ["--version"]),
             ("usr/bin/make", ["--version"]),
             ("usr/bin/ldid", ["-h"]),
             ("usr/bin/dpkg-deb", ["--version"]),
@@ -576,6 +599,8 @@ enum NanoMuseTheosRuntime {
         env["TOOLCHAIN_ROOT"] = root
         if fm.fileExists(atPath: root + "/theos/makefiles") {
             env["THEOS"] = root + "/theos"
+        } else if fm.fileExists(atPath: root + "/opt/theos/makefiles") {
+            env["THEOS"] = root + "/opt/theos"
         } else if fm.fileExists(atPath: root + "/makefiles") {
             env["THEOS"] = root
         }

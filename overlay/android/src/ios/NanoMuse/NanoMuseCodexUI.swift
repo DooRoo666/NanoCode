@@ -20,6 +20,7 @@ struct NanoMuseCodexView: View {
     @State private var prompt = ""
     @State private var storageItems: [NanoMuseStorage.Item] = []
     @State private var cleaningStorage = false
+    @State private var effort = NanoMuseCodexSettings.reasoningEffort
 
     // 模型来源
     @State private var source: NanoMuseCodexSource = NanoMuseCodexSettings.current.source
@@ -89,6 +90,7 @@ struct NanoMuseCodexView: View {
             assetsCard
             NanoMuseCaption(text: "原版随包资源：Mermaid 本地渲染、cacert.pem 信任根、models.json 离线模型表、20.9 KB 兜底提示词、entitlements.plist 签名模板与第三方声明。")
 
+            advancedCard
             extraCard
 
             // ③ 试跑
@@ -139,12 +141,39 @@ struct NanoMuseCodexView: View {
                 Task { await refreshAll() }
             }
             NanoMuseRowDivider()
-            NanoMuseActionRow(title: "路由与密钥检查（读 nano 设置）", chevron: false) {
+            NanoMuseActionRow(title: "诊断与维护", chevron: true) {
+                guard !busy, !nativeRunning else { return }
+                diagnose()
+            }
+        }
+    }
+
+    /// 高级维护：只保留真正会用到的几项
+    private var advancedCard: some View {
+        NanoMuseCard {
+            NanoMuseActionRow(title: "Theos 工具链", chevron: true) {
+                guard !busy, !nativeRunning else { return }
+                logLines.removeAll()
+                nativeLog.clear()
+                append("===== Theos 工具链 =====")
+                Task {
+                    if NanoMuseTheosRuntime.isJailbroken {
+                        append("已越狱：使用 /var/jb 的系统工具链")
+                        append(NanoMuseTheosRuntime.environment(for: "/var/jb")["PATH"] ?? "")
+                        for line in await NanoMuseTheosRuntime.smokeTest(root: "/var/jb") { append(line) }
+                    } else {
+                        append("未越狱：使用自带运行时（\(NanoMuseTheosRuntime.installRoot)）")
+                        _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
+                    }
+                }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "路由与密钥", chevron: true) {
                 guard !busy, !nativeRunning else { return }
                 checkProviders()
             }
             NanoMuseRowDivider()
-            NanoMuseActionRow(title: "进程阶梯测试（fork/exec 分离）", chevron: false) {
+            NanoMuseActionRow(title: "进程阶梯测试", chevron: true) {
                 guard !busy, !nativeRunning else { return }
                 logLines.removeAll()
                 nativeLog.clear()
@@ -154,36 +183,20 @@ struct NanoMuseCodexView: View {
                     for line in report.split(separator: "\n") { append(String(line)) }
                 }
             }
-            NanoMuseActionRow(title: "准备 TheosRuntime（安装 → 重签 → 自检）", chevron: false) {
-                guard !busy, !nativeRunning else { return }
-                logLines.removeAll()
-                nativeLog.clear()
-                append("===== TheosRuntime 准备 =====")
-                Task {
-                    // 只装到自己容器（<Library>/TheosRuntime），不读别人的 App 目录
-                    _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
-                    if let root = NanoMuseTheosRuntime.locate() {
-                        let env = NanoMuseTheosRuntime.environment(for: root)
-                        append("PATH = \(env["PATH"] ?? "")")
-                    } else {
-                        append("自检未通过：runtime 不在 \(NanoMuseTheosRuntime.installRoot)")
-                        for p in NanoMuseTheosRuntime.ownRoots() { append("  · " + p) }
-                    }
-                }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "协议：\(wireAPI == "responses" ? "responses" : "chat")", chevron: true) {
+                let next = wireAPI == "responses" ? "chat" : "responses"
+                wireAPI = next
+                NanoMuseCodexSettings.wireAPI = next
+                append("wire_api 已切换为 \(next)")
             }
             NanoMuseRowDivider()
-            HStack(spacing: 8) {
-                Image(systemName: "shippingbox")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                TextField("任意 .app 绝对路径（留空 = 打包本 App）", text: $tipaPath)
-                    .font(.caption.monospaced())
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
+            NanoMuseActionRow(title: "权限对照（原生 vs iSH）", chevron: true) {
+                guard !busy, !nativeRunning else { return }
+                probePermissions()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            NanoMuseActionRow(title: "打包成 tipa（不 fork，Agent 也能调用 tipa_build）", chevron: false) {
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "打包成 tipa", chevron: true) {
                 guard !busy, !nativeRunning else { return }
                 logLines.removeAll()
                 nativeLog.clear()
@@ -191,36 +204,11 @@ struct NanoMuseCodexView: View {
                 let raw = tipaPath.trimmingCharacters(in: .whitespacesAndNewlines)
                 let path = raw.isEmpty ? Bundle.main.bundlePath : raw
                 Task {
-                    // 复制 + 打包都要在后台，否则主线程会卡死
                     let report = await Task.detached(priority: .userInitiated) {
                         await NanoMuseTipaBuilder.build(appPath: path)
                     }.value
                     for line in report.lines { append(line) }
                 }
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "修复宿主 shell（写 /var/jb/bin/sh）", chevron: false) {
-                guard !busy, !nativeRunning else { return }
-                logLines.removeAll()
-                nativeLog.clear()
-                append(NanoMuseCodex.installHostShellShim())
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "协议：\(wireAPI == "responses" ? "responses" : "chat")（点切换）", chevron: false) {
-                let next = wireAPI == "responses" ? "chat" : "responses"
-                wireAPI = next
-                NanoMuseCodexSettings.wireAPI = next
-                append("wire_api 已切换为 \(next)")
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "自检（打诊断信息）", chevron: false) {
-                guard !busy, !nativeRunning else { return }
-                diagnose()
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "权限对照（原生 vs iSH）", chevron: false) {
-                guard !busy, !nativeRunning else { return }
-                probePermissions()
             }
         }
     }
@@ -638,6 +626,27 @@ struct NanoMuseCodexView: View {
                              titleColor: .primary, chevron: false)
 
             NanoMuseRowDivider()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("思考强度")
+                    .font(.body)
+                Text("作为子代理时：简单任务用 minimal/low 更快，复杂重构才要 high")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: Binding(
+                    get: { NanoMuseCodexSettings.reasoningEffort },
+                    set: { NanoMuseCodexSettings.reasoningEffort = $0; effort = $0 }
+                )) {
+                    ForEach(NanoMuseCodexSettings.reasoningEfforts, id: \.self) { e in
+                        Text(e).tag(e)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+
+            NanoMuseRowDivider()
             HStack {
                 Button {
                     fetchModels()
@@ -1004,23 +1013,26 @@ extension NanoMuseSettingsHomeView {
                 NanoMuseCodexView()
             } label: {
                 HStack(spacing: 12) {
+                    Image(systemName: "terminal")
+                        .font(.body)
+                        .foregroundStyle(NanoMuseTones.action)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Codex")
-                            .font(.headline)
+                            .font(.body)
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text("本地 AI 编码器 · 工具、模型与安装")
+                        Text("子代理 · 工具、模型与运行")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    Text("打开")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(NanoMuseTones.action)
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                .padding(.vertical, 12)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
