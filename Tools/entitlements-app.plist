@@ -16,14 +16,5 @@
 	<array>
 		<string>group.io.github.nanomuse.app</string>
 	</array>
-	<!-- 加载第三方 dylib（TheosRuntime 的 libiosexec / liblzma 等 Procursus 库）。
-	     dyld 会做 library validation，非 Apple 签名的库默认被拒，
-	     表现就是 "Library not loaded: @rpath/... / sandbox blocked mmap()"。
-	     这个键对应 AMFI 的 CS_DISABLE_LV，是唯一能关掉它的。 -->
-	<key>com.apple.security.cs.disable-library-validation</key><true/>
-	<!-- 允许把未签名的可执行内存映射进来（clang 生成代码/部分运行时需要） -->
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
-	<!-- iOS 的 JIT 开关，等价于允许可写可执行页 -->
-	<key>dynamic-codesigning</key><true/>
 </dict>
 </plist>

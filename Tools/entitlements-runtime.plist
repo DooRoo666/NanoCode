@@ -11,6 +11,7 @@
 -->
 <plist version="1.0">
 <dict>
+	<key>com.apple.private.security.no-container</key><true/>
 	<key>com.apple.private.security.storage.AppDataContainers</key><true/>
 	<key>com.apple.private.security.storage.AppBundles</key><true/>
 	<key>com.apple.private.security.no-sandbox</key><true/>
@@ -31,13 +32,13 @@
 	     真正原因是 library validation 拒绝了 AA 之外的 dylib。
 	     entitlements 不继承，所以必须让这些二进制自己带上这个开关
 	     （见 NanoMuseTheosRuntime.resign）。 -->
+	<!-- 只保留 iOS 上真正被 AMFI 识别的两条。
+	     allow-unsigned-executable-memory / dynamic-codesigning 是 macOS Hardened Runtime
+	     的键，iOS 上属于非法授权：签名写进去 AMFI 会在 exec 时拒绝整个二进制。
+	     主程序曾因为这两个键直接闪退，runtime 的二进制同样不能带。 -->
 	<key>com.apple.security.cs.disable-library-validation</key><true/>
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
-	<key>dynamic-codesigning</key><true/>
-	<!-- MT-Agent 原版就有这条，我们之前误删了。
-	     48 位扩展地址空间：clang-16 / ld64 这类工具链要映射大量段，
-	     没有它会在大 mmap 时失败（表现成 "sandbox blocked mmap" 之类）。
-	     已确认它不由 fork 崩溃引起（os.fork / fork+exec 在 EVA 下都正常）。 -->
+	<!-- MT-Agent 原版就有这条：48 位扩展地址空间，clang-16 / ld64 映射大量段要靠它。
+	     实测 os.fork()/fork+exec 在 EVA 下正常，所以它不是 SIGBUS 的原因。 -->
 	<key>com.apple.developer.kernel.extended-virtual-addressing</key><true/>
 </dict>
 </plist>
