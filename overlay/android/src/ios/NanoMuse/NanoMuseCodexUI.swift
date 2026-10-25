@@ -18,6 +18,8 @@ struct NanoMuseCodexView: View {
     @State private var tipaPath = ""
     @State private var output = ""
     @State private var prompt = ""
+    @State private var storageItems: [NanoMuseStorage.Item] = []
+    @State private var cleaningStorage = false
 
     // 模型来源
     @State private var source: NanoMuseCodexSource = NanoMuseCodexSettings.current.source
@@ -76,7 +78,10 @@ struct NanoMuseCodexView: View {
             NanoMuseCaption(text: "推荐在「运行时」里用原生方式安装 codex（原版 iphoneos-arm64 包，跑在 iOS 上）；这里的 Alpine 方式适合纯 Linux 工具。")
 
             toolsCard
-            NanoMuseCaption(text: "每项可单独安装；点「安装」后回显区会逐步打印命令、下载字节数、SHA256、ELF/版本信息。")
+            NanoMuseCaption(text: "每项可单独安装；已装的可点右侧垃圾桶删除。回显区会逐步打印命令、下载字节数、SHA256、版本信息。")
+
+            storageCard
+            NanoMuseCaption(text: "统计的是本 App 容器内的运行时、工具链、缓存与下载残留；不会动其他 App 的数据。")
 
             signingCard
             NanoMuseCaption(text: "codex-sign 给 Mach-O 产物签权限，ca-filetool 是多调用工具集（cat/ls/grep/tar），bash.real 是真正的 bash——三者都是 iOS 原生，不在 Alpine 里。")
@@ -92,6 +97,7 @@ struct NanoMuseCodexView: View {
         }
         .task {
             await refreshAll()
+            await refreshStorage()
             refreshInherited()
         }
         .sheet(isPresented: $showMermaid) {
@@ -272,20 +278,120 @@ struct NanoMuseCodexView: View {
             if isRunning {
                 ProgressView().controlSize(.small)
             } else {
-                Button {
-                    install(spec)
-                } label: {
-                    Text(installed == nil ? "安装" : "重装")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(busy ? Color.secondary : NanoMuseTones.action)
+                HStack(spacing: 14) {
+                    // 已装才显示删除；删除后清掉状态，下次重新探测
+                    if installed != nil {
+                        Button {
+                            removeTool(spec)
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.subheadline)
+                                .foregroundStyle(busy ? Color.secondary : .red)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(busy)
+                    }
+                    Button {
+                        install(spec)
+                    } label: {
+                        Text(installed == nil ? "安装" : "重装")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(busy ? Color.secondary : NanoMuseTones.action)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(busy)
                 }
-                .buttonStyle(.plain)
-                .disabled(busy)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .contentShape(Rectangle())
+    }
+
+    // MARK: - 存储管理
+
+    @ViewBuilder
+    private var storageCard: some View {
+        NanoMuseCard {
+            ForEach(Array(storageItems.enumerated()), id: \.element.id) { index, item in
+                if index > 0 { NanoMuseRowDivider() }
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title).font(.body)
+                        Text(item.detail).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Text(item.sizeText)
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button {
+                        removeStorageItem(item)
+                    } label: {
+                        Image(systemName: "trash").font(.subheadline).foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+
+            if !storageItems.isEmpty {
+                NanoMuseRowDivider()
+                HStack {
+                    Text("合计")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Text(NanoMuseStorage.format(storageItems.reduce(0) { $0 + $1.bytes }))
+                        .font(.subheadline.monospacedDigit().weight(.semibold))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: cleaningStorage ? "清理中…" : "安全清理缓存", chevron: false) {
+                guard !cleaningStorage else { return }
+                clearStorageCaches()
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "重新检测", chevron: false) {
+                Task { await refreshStorage() }
+            }
+        }
+    }
+
+    private func refreshStorage() async {
+        let items = await Task.detached(priority: .utility) {
+            await NanoMuseStorage.items()
+        }.value
+        storageItems = items
+    }
+
+    private func removeStorageItem(_ item: NanoMuseStorage.Item) {
+        logLines.removeAll()
+        Task {
+            append("===== 删除 \(item.title)（\(item.sizeText)）=====")
+            let ok = await Task.detached(priority: .userInitiated) {
+                NanoMuseStorage.remove(item)
+            }.value
+            append(ok ? "已删除" : "部分文件删除失败（可能被占用）")
+            await refreshStorage()
+            await refreshAll()
+        }
+    }
+
+    private func clearStorageCaches() {
+        cleaningStorage = true
+        logLines.removeAll()
+        Task {
+            let freed = await Task.detached(priority: .userInitiated) {
+                NanoMuseStorage.clearCaches()
+            }.value
+            append("===== 清理缓存 =====")
+            append("释放 \(NanoMuseStorage.format(freed))")
+            cleaningStorage = false
+            await refreshStorage()
+        }
     }
 
     // MARK: - 签名与构建工具（随包的 Mach-O Helpers）
@@ -787,6 +893,29 @@ struct NanoMuseCodexView: View {
             return result
         }.value
         toolStatus = statuses
+    }
+
+    /// 删除一个工具：运行时用 NativeRuntime 卸载，Alpine 包用 apk del
+    private func removeTool(_ spec: NanoMuseToolSpec) {
+        logLines.removeAll()
+        Task {
+            busy = true
+            defer { busy = false }
+            append("===== 卸载 \(spec.title) =====")
+
+            if NanoMuseNativeRuntime.isInstalled(spec.id) {
+                let ok = NanoMuseNativeRuntime.uninstall(spec.id)
+                append(ok ? "已删除运行时目录" : "删除失败（目录可能被占用）")
+            } else {
+                let script = "apk del \(spec.id) 2>&1 | tail -5; echo STEP done"
+                let (code, out) = await NanoMuseCodex.runCommand(script, timeout: 180)
+                for line in out.split(separator: "\n") { append(String(line)) }
+                append("apk del 退出码 = \(code)")
+            }
+
+            toolStatus[spec.id] = nil
+            await refreshAll()
+        }
     }
 
     private func install(_ spec: NanoMuseToolSpec) {
