@@ -872,11 +872,29 @@ public enum NanoMuseCodex {
                                                                withDestinationPath: shellPath)
                 }
             }
-            env["PATH"] = [
-                binDir.path,
-                NanoMuseHelperRunner.helpersDirectory,
-                "/usr/bin", "/bin", "/usr/sbin", "/sbin",
-            ].joined(separator: ":")
+            // TheosRuntime（clang-16 / make / ld64 / ldid / dpkg-deb）在 MT-Agent 的
+            // PreparedRuntimes 里。以前 locate() 只在设置页的「准备 TheosRuntime」按钮里
+            // 用过一次，codex 自己的 PATH 完全不含它 —— 于是 codex 里敲 clang 永远 127，
+            // 只能写全路径。这里把它接进 PATH / DYLD，codex 才算真的能编译。
+            var runtimePath: [String] = []
+            if let rtRoot = NanoMuseTheosRuntime.locate() {
+                let rtEnv = NanoMuseTheosRuntime.environment(for: rtRoot)
+                if let p = rtEnv["PATH"] {
+                    runtimePath = p.split(separator: ":").map(String.init)
+                }
+                for key in ["DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH"] {
+                    if let v = rtEnv[key] {
+                        // 保留已有值：runtime 的库目录要排在最前面
+                        let old = env[key].map { ":" + $0 } ?? ""
+                        env[key] = v + old
+                    }
+                }
+            }
+            env["PATH"] = (
+                [binDir.path, NanoMuseHelperRunner.helpersDirectory]
+                + runtimePath
+                + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+            ).joined(separator: ":")
             // 有些路径（PTY / 登录 shell）会直接读 $SHELL
             if !shellPath.isEmpty {
                 env["SHELL"] = shellPath

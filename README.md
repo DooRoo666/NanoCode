@@ -54,3 +54,36 @@ NanoCode/
 还有一个必须知道的约束：**iSH 是 x86 模拟，跑不了 arm64 的 codex 二进制**。
 所以 TrollStore 版可以原生 spawn（就是本引擎的做法，权限足够）；
 App Store/TestFlight 版只能走远端配对执行。
+
+## nsh（forkless shell）能做什么
+
+iOS 的 SDK 把 `fork()` 标为 unavailable，而 bash 的管道 / 重定向 / 子 shell /
+命令替换 / 后台作业**全部**依赖 fork，所以 `bash.real` 一遇到这些语法就 SIGBUS(10)。
+`Tools/forkless-sh/nsh.c` 用 `posix_spawn` 重实现了同样的语义：
+
+| 语法 | 实现方式 | 状态 |
+|---|---|---|
+| 单命令 / 通配符 / `cd` / `export` | `posix_spawnp` + `glob()` + `chdir` | ✅ |
+| 管道 `a \| b \| c` | `pipe()` + 每段一次 spawn | ✅ |
+| 重定向 `> >> < 2> 2>&1` | `posix_spawn_file_actions_adddup2` | ✅ |
+| 序列 / 条件 `;` `&&` `\|\|` | 顶层切分后顺序 spawn | ✅ |
+| 变量 `$VAR` `${VAR}` `$?` `$$` | 自身变量表 + `getenv` | ✅ |
+| 赋值 `VAR=value`（含前置） | 内存变量表，随 spawn 传给子进程 | ✅ |
+| 命令替换 `$( ... )` | `pipe()` + spawn 自身 `-c`，读回 stdout | ✅ |
+| 参数 `-c` / `-lc` / `-ec` / `-i` | 按字符解析标志位 | ✅ |
+| 子 shell `( )` / 后台 `&` | —— | ❌ 仍不支持 |
+| `for` / `if` / 函数 | —— | ❌ 仍不支持（脚本请用 bash.real，但别写管道） |
+
+> **注意**：nsh 必须用 `entitlements-app.plist` 重签才会带上
+> `no-sandbox` / `disable-library-validation`；`make_tipa.sh` 里对
+> `Helpers/nsh` 有专门分支，别把它和 MT 原版三件（bash.real / codex-sign /
+> ca-filetool）混在"有签名就保留"的逻辑里。
+
+## TheosRuntime 的两个前提
+
+1. **必须重签**：`clang-16` / `ld64` / `ldid` / `dpkg-deb` 依赖 Procursus 的
+   `libiosexec` / `liblzma` 等第三方 dylib，不重签就会被 library validation 拦成
+   `Library not loaded … sandbox blocked mmap()`。入口在设置页
+   「准备 TheosRuntime（定位 + 重签 dylib 权限）」。
+2. **必须进 PATH**：`NanoMuseCodex` 启动 codex 时会把 runtime 的 `usr/bin` 与
+   `usr/lib` 接到 `PATH` / `DYLD_*`，否则 codex 里敲 `clang` 永远 127。

@@ -33,6 +33,20 @@ if grep -q "<key>com.apple.developer.kernel.extended-virtual-addressing</key>" "
   exit 1
 fi
 
+# 反向守卫：这两个键是 TheosRuntime 能跑起来的**唯一**前提。
+# 一旦有人"清理"掉，表现就是 clang-16 报
+#   Library not loaded: @rpath/libiosexec.1.dylib / sandbox blocked mmap()
+# 而且极难从现象倒推回权限，所以在构建期直接拦住。
+for k in com.apple.security.cs.disable-library-validation \
+         com.apple.security.cs.allow-unsigned-executable-memory; do
+  for f in "$MAIN_ENT" "$RUNTIME_ENT"; do
+    if ! grep -q "<key>$k</key>" "$f"; then
+      echo "error: $(basename "$f") 缺少 $k（TheosRuntime 会加载失败）" >&2
+      exit 1
+    fi
+  done
+done
+
 is_macho() { file -b "$1" 2>/dev/null | grep -q "Mach-O"; }
 
 rm -rf "$OUT/Payload"
@@ -156,12 +170,23 @@ while IFS= read -r -d '' f; do
     case "$f" in
       "$TARGET/$APP_NAME") continue ;;                    # 主程序最后签
       *.appex/*) continue ;;                              # 扩展单独签
-      */Helpers/*)
+      */Helpers/bash.real|*/Helpers/codex-sign|*/Helpers/ca-filetool)
+        # 这三个是 MT-Agent 发布时用 ldid + 完整巨魔权限签好的。
+        # 我们重签会改写 CodeDirectory / requirements / 特殊槽位，虽然形态看起来一样，
+        # 但会让「fork 出来的子进程」在 CS 校验上失败 → Bus error 10。
         if has_signature "$f"; then
           keepCount=$((keepCount+1))
         else
           "$LDID" -S"$MAIN_ENT" "$f"; helperCount=$((helperCount+1))
         fi
+        ;;
+      */Helpers/*)
+        # 我们自己编的（nsh / forktest-arm64 / forktest-arm64e）：
+        # 链接器会自动给一个 ad-hoc 签名，它**没有任何 entitlement**。
+        # 早先这里复用了「有签名就保留」的判定，于是 nsh 一直裸奔——
+        # 它起的子进程没有 no-sandbox / disable-library-validation，
+        # 加载 TheosRuntime 的 dylib 照样被拦。
+        "$LDID" -S"$MAIN_ENT" "$f"; helperCount=$((helperCount+1))
         ;;
       *) "$LDID" -S "$f"; count=$((count+1)) ;;
     esac
