@@ -1,21 +1,16 @@
 import Foundation
 import CryptoKit
 
-/// 自带的 Mach-O ad-hoc 签名器（ldid 风格：SHA256 CodeDirectory + SuperBlob，不写 CMS）。
+/// 自带的 Mach-O ad-hoc 签名器（严格对齐 ldid 在本机的输出格式）。
 ///
-/// 为什么必须自己做：
-///   · 随包的 `codex-sign` 用 "App Store code directory"（带 CMS）签名，AMFI 在**加载**时
-///     按 Apple 锚点校验 → `code signature invalid`；
-///   · 它的 `--adhoc-only` 分支在本机直接失败（NSOSStatusErrorDomain -67048）。
-///   · 因此 TheosRuntime 里的 clang-16 / make / ldid / dpkg-deb 都起不来。
+/// 关键事实（从 ldid 签的、本机能跑的 nsh 上 dump 出来）：
+///   · 代码签名块整体是**大端**（`fa de 0c c0` = CSMAGIC_EMBEDDED_SIGNATURE）
+///   · CodeDirectory 版本 0x20500，头 96 字节
+///   · hashSize 20 / hashType 1（SHA1）
+///   · nSpecialSlots = 7，entitlements 在槽位 -5
 ///
-/// 本实现只做 iOS 上真正需要的那一套：
-///   1. 计算每 4 KB 页的 SHA256（code slots）
-///   2. 生成 CodeDirectory（flags = CS_ADHOC，hashType = SHA256）
-///   3. 可选 entitlements（特殊槽位 5 存它的哈希，blob 本身放进 SuperBlob）
-///   4. 把 SuperBlob 追加到文件末尾，扩展 __LINKEDIT，改写/新增 LC_CODE_SIGNATURE
-///
-/// 只支持 thin Mach-O 64（arm64）；遇到 FAT 会直接抛错（调用方回退）。
+/// 而 Mach-O 自身的头/load commands 仍是小端 —— 两者不能混。
+/// 之前写成小端 + 0x20200 → AMFI 直接返回 EBADARCH（Bad executable）。
 enum NanoMuseMachSigner {
 
     struct SignError: LocalizedError {
@@ -23,7 +18,7 @@ enum NanoMuseMachSigner {
         var errorDescription: String? { message }
     }
 
-    // Mach-O 常量
+    // MARK: Mach-O（小端）
     private static let MH_MAGIC_64: UInt32 = 0xfeedfacf
     private static let MH_CIGAM_64: UInt32 = 0xcffaedfe
     private static let LC_SEGMENT_64: UInt32 = 0x19
@@ -31,41 +26,21 @@ enum NanoMuseMachSigner {
     private static let FAT_MAGIC: UInt32 = 0xcafebabe
     private static let FAT_CIGAM: UInt32 = 0xbebafeca
 
-    // CodeDirectory 常量
+    // MARK: CodeSigning（大端）
     private static let CSMAGIC_EMBEDDED_SIGNATURE: UInt32 = 0xfade0cc0
     private static let CSMAGIC_CODEDIRECTORY: UInt32 = 0xfade0c02
     private static let CSMAGIC_EMBEDDED_ENTITLEMENTS: UInt32 = 0xfade7171
     private static let CSSLOT_CODEDIRECTORY: UInt32 = 0
     private static let CSSLOT_ENTITLEMENTS: UInt32 = 5
-    private static let CD_VERSION: UInt32 = 0x20200
+    private static let CD_VERSION: UInt32 = 0x20500
     private static let CS_ADHOC: UInt32 = 0x2
-    private static let HASH_SIZE = 32
-    private static let PAGE_LOG = 12            // 4096
+    private static let HASH_SIZE = 20          // SHA1，与 ldid 一致
+    private static let HASH_TYPE: UInt8 = 1    // CS_HASHTYPE_SHA1
+    private static let SPECIAL_SLOTS = 7
+    private static let ENT_SLOT_INDEX = 2      // 文件顺序里第 3 个 = 槽位 -5
+    private static let PAGE_LOG: UInt8 = 12
 
-    /// 从 FAT 二进制里取出 arm64（cputype 0x0100000c）那一片
-    private static func arm64Slice(of data: Data) -> Data? {
-        guard data.count >= 8 else { return nil }
-        let nArch = Int(data.be32(4))
-        guard nArch > 0 && nArch < 32 else { return nil }
-        for i in 0..<nArch {
-            let base = 8 + i * 20
-            guard base + 20 <= data.count else { break }
-            let cputype = Int32(bitPattern: data.be32(base))
-            let offset = Int(data.be32(base + 8))
-            let size = Int(data.be32(base + 12))
-            guard offset > 0, size > 0, offset + size <= data.count else { continue }
-            if cputype == 0x0100_000c {          // CPU_TYPE_ARM64
-                return data.subdata(in: offset..<(offset + size))
-            }
-        }
-        return nil
-    }
-
-    /// 给一个 thin Mach-O 打 ad-hoc 签名（原地覆写）
-    /// - Parameters:
-    ///   - path: 目标文件
-    ///   - entitlements: 可选的 entitlements plist 原始字节
-    ///   - identifier: CodeDirectory 里的标识名（一般用文件名）
+    /// 打 ad-hoc 签名（原地覆写）
     static func sign(path: String, entitlements: Data? = nil, identifier: String? = nil) throws {
         guard var data = FileManager.default.contents(atPath: path) else {
             throw SignError(message: "读不到 \(path)")
@@ -74,8 +49,6 @@ enum NanoMuseMachSigner {
 
         let magic = data.le32(0)
         if magic == FAT_MAGIC || magic == FAT_CIGAM {
-            // FAT：取出 arm64 那一片改写成 thin（iOS 上反正只跑 arm64），
-            // 再走正常签名流程。59 个失败文件基本都卡在这里。
             guard let slice = arm64Slice(of: data) else {
                 throw SignError(message: "FAT 里没有 arm64 片：\(path)")
             }
@@ -89,7 +62,6 @@ enum NanoMuseMachSigner {
         let ncmds = Int(data.le32(16))
         let sizeofcmds = Int(data.le32(20))
         let headerSize = 32
-        var linkset: (index: Int, cmdOff: Int, fileoff: Int, filesize: Int, vmsize: Int, vmaddr: Int)?
         var sigCmd: (cmdOff: Int, dataoff: Int, datasize: Int)?
         var firstSectionOffset = data.count
         var off = headerSize
@@ -100,32 +72,18 @@ enum NanoMuseMachSigner {
             if cmdsize <= 0 { break }
             if cmd == LC_SEGMENT_64 {
                 let segname = data.str(off + 8, 16)
-                let vmaddr = Int(data.le64(off + 24))
-                let vmsize = Int(data.le64(off + 32))
-                let fileoff = Int(data.le64(off + 40))
-                let filesize = Int(data.le64(off + 48))
                 let nsects = Int(data.le32(off + 64))
-                if segname == "__LINKEDIT" {
-                    linkset = (off, off, fileoff, filesize, vmsize, vmaddr)
-                }
-                if segname != "__PAGEZERO" && nsects > 0 {
-                    // 第一个 section 的 offset 是 header 之后可用的空洞上界
-                    let sectOff = off + 72
-                    if sectOff + 48 <= data.count {
-                        let addr = Int(data.le32(sectOff + 40))   // section offset 字段
-                        if addr > 0 && addr < firstSectionOffset { firstSectionOffset = addr }
-                    }
+                if segname != "__PAGEZERO" && nsects > 0, off + 72 + 44 <= data.count {
+                    let sectOffset = Int(data.le32(off + 72 + 40))
+                    if sectOffset > 0 && sectOffset < firstSectionOffset { firstSectionOffset = sectOffset }
                 }
             } else if cmd == LC_CODE_SIGNATURE {
                 sigCmd = (off, Int(data.le32(off + 8)), Int(data.le32(off + 12)))
             }
             off += cmdsize
         }
-        guard let linkedit = linkset else { throw SignError(message: "没有 __LINKEDIT") }
 
-        // **不裁剪任何字节**：旧签名原样留在文件里（成为无用数据），
-        // 新签名一律追加到文件末尾，只改 LC_CODE_SIGNATURE 指向它。
-        // 之前按旧 dataoff 裁剪过，结果把真实内容截断了（clang-16 从 76 KB 掉到 53 KB）。
+        // 不裁剪：旧签名原样留在文件里，新签名追加到末尾（重复签名安全）
         var base = data
         while base.count % 16 != 0 { base.append(0) }
         let codeLimit = base.count
@@ -133,78 +91,83 @@ enum NanoMuseMachSigner {
         let ident = (identifier ?? URL(fileURLWithPath: path).lastPathComponent)
         let identData = Data(ident.utf8) + Data([0])
 
-        // 代码页哈希
+        // 代码页哈希（SHA1）
         var codeHashes = Data()
         var pageOff = 0
+        let pageSize = 1 << Int(PAGE_LOG)
         while pageOff < codeLimit {
-            let end = min(pageOff + (1 << PAGE_LOG), codeLimit)
-            let chunk = base.subdata(in: pageOff..<end)
-            codeHashes.append(Data(SHA256.hash(data: chunk)))
+            let end = min(pageOff + pageSize, codeLimit)
+            codeHashes.append(Data(Insecure.SHA1.hash(data: base.subdata(in: pageOff..<end))))
             pageOff = end
         }
         let nCodeSlots = codeHashes.count / HASH_SIZE
 
-        // 特殊槽位：只在有 entitlements 时才用（slot 5）
+        // 特殊槽位（仅在有 entitlements 时用）
         var specialHashes = Data()
-        var nSpecialSlots = 0
+        var nSpecial = 0
         if let ents = entitlements {
-            nSpecialSlots = 5
-            // 槽位从 5 递减到 1；只有 5 有值，其余填 0
-            specialHashes.append(Data(SHA256.hash(data: ents)))
-            for _ in 1..<5 {
-                specialHashes.append(Data(repeating: 0, count: HASH_SIZE))
+            nSpecial = SPECIAL_SLOTS
+            for i in 0..<SPECIAL_SLOTS {
+                if i == ENT_SLOT_INDEX {
+                    specialHashes.append(Data(Insecure.SHA1.hash(data: ents)))
+                } else {
+                    specialHashes.append(Data(repeating: 0, count: HASH_SIZE))
+                }
             }
         }
 
-        // 组装 CodeDirectory（version 0x20200，固定头 52 字节）
+        // ---- CodeDirectory v0x20500（大端，头 96 字节）----
         var cd = Data()
-        cd.appendLE32(CSMAGIC_CODEDIRECTORY)
-        cd.appendLE32(0)                       // length，稍后回填
-        cd.appendLE32(CD_VERSION)
-        cd.appendLE32(CS_ADHOC)
-        cd.appendLE32(0)                       // hashOffset，稍后回填
-        cd.appendLE32(0)                       // identOffset，稍后回填
-        cd.appendLE32(UInt32(nSpecialSlots))
-        cd.appendLE32(UInt32(nCodeSlots))
-        cd.appendLE32(UInt32(codeLimit))
+        cd.appendBE32(CSMAGIC_CODEDIRECTORY)
+        cd.appendBE32(0)                       // length（回填）
+        cd.appendBE32(CD_VERSION)
+        cd.appendBE32(CS_ADHOC)
+        cd.appendBE32(0)                       // hashOffset（回填）
+        cd.appendBE32(0)                       // identOffset（回填）
+        cd.appendBE32(UInt32(nSpecial))
+        cd.appendBE32(UInt32(nCodeSlots))
+        cd.appendBE32(UInt32(codeLimit))
         cd.append(UInt8(HASH_SIZE))
-        cd.append(UInt8(2))                    // hashType = SHA256
+        cd.append(HASH_TYPE)
         cd.append(UInt8(0))                    // platform
-        cd.append(UInt8(PAGE_LOG))
-        cd.appendLE32(0)                       // spare2
-        cd.appendLE32(0)                       // scatterOffset
-        cd.appendLE32(0)                       // teamOffset
+        cd.append(PAGE_LOG)
+        cd.appendBE32(0)                       // spare2
+        cd.appendBE32(0)                       // scatterOffset
+        cd.appendBE32(0)                       // teamOffset
+        cd.appendBE32(0)                       // spare3
+        cd.appendBE64(0)                       // codeLimit64
+        cd.appendBE64(0)                       // execSegBase
+        cd.appendBE64(0)                       // execSegLimit
+        cd.appendBE64(0)                       // execSegFlags
+        cd.appendBE32(0)                       // runtime
+        cd.appendBE32(0)                       // preEncryptOffset
+        guard cd.count == 96 else { throw SignError(message: "CD 头长度不对：\(cd.count)") }
 
         let identOffset = UInt32(cd.count)
         cd.append(identData)
-        // 特殊槽位必须 4 字节对齐
         while cd.count % 4 != 0 { cd.append(0) }
-        // 关键：hashOffset 必须指向 **code slot 0**，
-        // 特殊槽位（-1 … -nSpecialSlots）紧挨在它**前面**。
-        // 之前把 hashOffset 指向了特殊槽位起点，AMFI 于是把 ident 区当成哈希 →
-        // 整个 CodeDirectory 判无效，spawn 直接返回 EBADARCH（Bad executable）。
         cd.append(specialHashes)
-        let hashOffset = UInt32(cd.count)
+        let hashOffset = UInt32(cd.count)      // 指向 code slot 0
         cd.append(codeHashes)
-        cd.setLE32(4, UInt32(cd.count))
-        cd.setLE32(16, hashOffset)
-        cd.setLE32(20, identOffset)
+        cd.setBE32(4, UInt32(cd.count))
+        cd.setBE32(16, hashOffset)
+        cd.setBE32(20, identOffset)
 
-        // SuperBlob
+        // ---- SuperBlob（大端）----
         var blobs: [(UInt32, Data)] = [(CSSLOT_CODEDIRECTORY, cd)]
         if let ents = entitlements {
             var entBlob = Data()
-            entBlob.appendLE32(CSMAGIC_EMBEDDED_ENTITLEMENTS)
-            entBlob.appendLE32(UInt32(ents.count + 8))
+            entBlob.appendBE32(CSMAGIC_EMBEDDED_ENTITLEMENTS)
+            entBlob.appendBE32(UInt32(ents.count + 8))
             entBlob.append(ents)
             while entBlob.count % 4 != 0 { entBlob.append(0) }
             blobs.append((CSSLOT_ENTITLEMENTS, entBlob))
         }
 
         var superBlob = Data()
-        superBlob.appendLE32(CSMAGIC_EMBEDDED_SIGNATURE)
-        superBlob.appendLE32(0)                       // length，稍后回填
-        superBlob.appendLE32(UInt32(blobs.count))
+        superBlob.appendBE32(CSMAGIC_EMBEDDED_SIGNATURE)
+        superBlob.appendBE32(0)                // length（回填）
+        superBlob.appendBE32(UInt32(blobs.count))
         var cursor = 12 + 8 * blobs.count
         var offsets: [UInt32] = []
         for (_, blob) in blobs {
@@ -212,30 +175,24 @@ enum NanoMuseMachSigner {
             cursor += blob.count
         }
         for (i, item) in blobs.enumerated() {
-            superBlob.appendLE32(item.0)
-            superBlob.appendLE32(offsets[i])
+            superBlob.appendBE32(item.0)
+            superBlob.appendBE32(offsets[i])
         }
         for (_, blob) in blobs { superBlob.append(blob) }
-        superBlob.setLE32(4, UInt32(superBlob.count))
+        superBlob.setBE32(4, UInt32(superBlob.count))
         while superBlob.count % 16 != 0 { superBlob.append(0) }
 
-        // 写入：先补签名区，再改 __LINKEDIT / LC_CODE_SIGNATURE
         var out = base
         let dataoff = out.count
         out.append(superBlob)
 
-        let linkeditEnd = dataoff + superBlob.count
-        let newFileSize = linkeditEnd - linkedit.fileoff
-        let pageSize = 1 << PAGE_LOG
-        let newVMSize = (newFileSize + pageSize - 1) / pageSize * pageSize
-
+        // 更新 __LINKEDIT 与 LC_CODE_SIGNATURE
         if let sig = sigCmd {
             out.setLE32(sig.cmdOff + 8, UInt32(dataoff))
             out.setLE32(sig.cmdOff + 12, UInt32(superBlob.count))
         } else {
-            // 需要在 header 里插入一条 LC_CODE_SIGNATURE
             guard sizeofcmds + 16 <= firstSectionOffset - headerSize else {
-                throw SignError(message: "header 没有空间插入 LC_CODE_SIGNATURE")
+                throw SignError(message: "header 空间不足，无法插入 LC_CODE_SIGNATURE")
             }
             let insertAt = headerSize + sizeofcmds
             var cmdData = Data()
@@ -246,24 +203,23 @@ enum NanoMuseMachSigner {
             out.insert(contentsOf: cmdData, at: insertAt)
             out.setLE32(16, UInt32(ncmds + 1))
             out.setLE32(20, UInt32(sizeofcmds + 16))
-            // __LINKEDIT 的命令偏移没变（在 header 之后、插入点之后的话会变）
-            if linkedit.cmdOff >= insertAt {
-                // 插入点在 sizeofcmds 末尾，__LINKEDIT 在其后 → 需要整体后移
-                // 简化：重新解析（此时 offsets 已变化）
-                throw SignError(message: "需要移动 __LINKEDIT，暂不支持该布局")
-            }
         }
 
-        // 更新 __LINKEDIT 的 filesize / vmsize（注意插入后偏移可能变化，重新定位）
+        // 重新定位 __LINKEDIT（插入命令后偏移可能变化）
         var off2 = 32
         let ncmds2 = Int(out.le32(16))
         var fixed = false
         for _ in 0..<ncmds2 {
+            guard off2 + 72 <= out.count else { break }
             let cmd = out.le32(off2)
             let cmdsize = Int(out.le32(off2 + 4))
+            if cmdsize <= 0 { break }
             if cmd == LC_SEGMENT_64 && out.str(off2 + 8, 16) == "__LINKEDIT" {
-                out.setLE64(off2 + 32, UInt64(newVMSize))          // vmsize
-                out.setLE64(off2 + 48, UInt64(newFileSize))        // filesize
+                let fileoff = Int(out.le64(off2 + 40))
+                let newFileSize = out.count - fileoff
+                let newVMSize = (newFileSize + pageSize - 1) / pageSize * pageSize
+                out.setLE64(off2 + 48, UInt64(newFileSize))
+                out.setLE64(off2 + 32, UInt64(newVMSize))
                 fixed = true
                 break
             }
@@ -271,15 +227,31 @@ enum NanoMuseMachSigner {
         }
         if !fixed { throw SignError(message: "找不到 __LINKEDIT") }
 
-        // 自检：文件必须仍以 Mach-O magic 开头，且不小于签名前
-        guard out.count > codeLimit, out.le32(0) == MH_MAGIC_64 || out.le32(0) == MH_CIGAM_64 else {
+        guard out.count > codeLimit,
+              out.le32(0) == MH_MAGIC_64 || out.le32(0) == MH_CIGAM_64 else {
             throw SignError(message: "签名后结构异常：\(path)")
         }
         try out.write(to: URL(fileURLWithPath: path))
     }
 
-    /// 只读取 ad-hoc 签名是否已经存在（用于增量判断）
-    static func hasAdhocSignature(path: String) -> Bool {
+    /// 从 FAT 里取出 arm64 片
+    private static func arm64Slice(of data: Data) -> Data? {
+        guard data.count >= 8 else { return nil }
+        let nArch = Int(data.be32(4))
+        guard nArch > 0 && nArch < 32 else { return nil }
+        for i in 0..<nArch {
+            let base = 8 + i * 20
+            guard base + 20 <= data.count else { break }
+            let cputype = Int32(bitPattern: data.be32(base))
+            let offset = Int(data.be32(base + 8))
+            let size = Int(data.be32(base + 12))
+            guard offset > 0, size > 0, offset + size <= data.count else { continue }
+            if cputype == 0x0100_000c { return data.subdata(in: offset..<(offset + size)) }
+        }
+        return nil
+    }
+
+    static func hasSignature(path: String) -> Bool {
         guard let data = FileManager.default.contents(atPath: path) else { return false }
         let magic = data.le32(0)
         guard magic == MH_MAGIC_64 || magic == MH_CIGAM_64 else { return false }
@@ -297,56 +269,60 @@ enum NanoMuseMachSigner {
     }
 }
 
-// MARK: - 小工具
+// MARK: - 字节序小工具
 
 private extension Data {
-    func le32(_ offset: Int) -> UInt32 {
-        guard offset + 4 <= count else { return 0 }
-        return UInt32(self[startIndex + offset])
-            | (UInt32(self[startIndex + offset + 1]) << 8)
-            | (UInt32(self[startIndex + offset + 2]) << 16)
-            | (UInt32(self[startIndex + offset + 3]) << 24)
+    func le32(_ o: Int) -> UInt32 {
+        guard o + 4 <= count else { return 0 }
+        let i = startIndex + o
+        return UInt32(self[i]) | (UInt32(self[i + 1]) << 8)
+            | (UInt32(self[i + 2]) << 16) | (UInt32(self[i + 3]) << 24)
     }
-    func le64(_ offset: Int) -> UInt64 {
-        guard offset + 8 <= count else { return 0 }
+    func le64(_ o: Int) -> UInt64 {
+        guard o + 8 <= count else { return 0 }
         var v: UInt64 = 0
-        for i in (0..<8).reversed() {
-            v = (v << 8) | UInt64(self[startIndex + offset + i])
-        }
+        for k in (0..<8).reversed() { v = (v << 8) | UInt64(self[startIndex + o + k]) }
         return v
     }
-    func be32(_ offset: Int) -> UInt32 {
-        guard offset + 4 <= count else { return 0 }
-        return (UInt32(self[startIndex + offset]) << 24)
-            | (UInt32(self[startIndex + offset + 1]) << 16)
-            | (UInt32(self[startIndex + offset + 2]) << 8)
-            | UInt32(self[startIndex + offset + 3])
+    func be32(_ o: Int) -> UInt32 {
+        guard o + 4 <= count else { return 0 }
+        let i = startIndex + o
+        return (UInt32(self[i]) << 24) | (UInt32(self[i + 1]) << 16)
+            | (UInt32(self[i + 2]) << 8) | UInt32(self[i + 3])
     }
-    func str(_ offset: Int, _ len: Int) -> String {
-        guard offset + len <= count else { return "" }
-        let slice = self[(startIndex + offset)..<(startIndex + offset + len)]
-        let bytes = slice.prefix { $0 != 0 }
+    func str(_ o: Int, _ len: Int) -> String {
+        guard o + len <= count else { return "" }
+        let bytes = self[(startIndex + o)..<(startIndex + o + len)].prefix { $0 != 0 }
         return String(decoding: bytes, as: UTF8.self)
     }
-    mutating func setLE32(_ offset: Int, _ value: UInt32) {
-        guard offset + 4 <= count else { return }
-        let i = startIndex + offset
-        self[i] = UInt8(value & 0xff)
-        self[i + 1] = UInt8((value >> 8) & 0xff)
-        self[i + 2] = UInt8((value >> 16) & 0xff)
-        self[i + 3] = UInt8((value >> 24) & 0xff)
+    mutating func setLE32(_ o: Int, _ v: UInt32) {
+        guard o + 4 <= count else { return }
+        let i = startIndex + o
+        for k in 0..<4 { self[i + k] = UInt8((v >> (8 * UInt32(k))) & 0xff) }
     }
-    mutating func setLE64(_ offset: Int, _ value: UInt64) {
-        guard offset + 8 <= count else { return }
-        let i = startIndex + offset
-        for k in 0..<8 {
-            self[i + k] = UInt8((value >> (8 * UInt64(k))) & 0xff)
-        }
+    mutating func setLE64(_ o: Int, _ v: UInt64) {
+        guard o + 8 <= count else { return }
+        let i = startIndex + o
+        for k in 0..<8 { self[i + k] = UInt8((v >> (8 * UInt64(k))) & 0xff) }
     }
-    mutating func appendLE32(_ value: UInt32) {
-        append(UInt8(value & 0xff))
-        append(UInt8((value >> 8) & 0xff))
-        append(UInt8((value >> 16) & 0xff))
-        append(UInt8((value >> 24) & 0xff))
+    mutating func setBE32(_ o: Int, _ v: UInt32) {
+        guard o + 4 <= count else { return }
+        let i = startIndex + o
+        self[i] = UInt8((v >> 24) & 0xff)
+        self[i + 1] = UInt8((v >> 16) & 0xff)
+        self[i + 2] = UInt8((v >> 8) & 0xff)
+        self[i + 3] = UInt8(v & 0xff)
+    }
+    mutating func appendLE32(_ v: UInt32) {
+        for k in 0..<4 { append(UInt8((v >> (8 * UInt32(k))) & 0xff)) }
+    }
+    mutating func appendBE32(_ v: UInt32) {
+        append(UInt8((v >> 24) & 0xff))
+        append(UInt8((v >> 16) & 0xff))
+        append(UInt8((v >> 8) & 0xff))
+        append(UInt8(v & 0xff))
+    }
+    mutating func appendBE64(_ v: UInt64) {
+        for k in (0..<8).reversed() { append(UInt8((v >> (8 * UInt64(k))) & 0xff)) }
     }
 }

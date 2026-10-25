@@ -378,6 +378,30 @@ static int eval_test(char **a, int n) {
     return negate ? !r : r;
 }
 
+/* 在 PATH 里找一个可执行文件：成功时把绝对路径写进 out */
+static int find_in_path(const char *name, char *out, size_t outlen) {
+    if (!name || !*name) return 0;
+    if (strchr(name, '/')) {
+        if (access(name, X_OK) == 0) { snprintf(out, outlen, "%s", name); return 1; }
+        return 0;
+    }
+    const char *path = getenv("PATH");
+    if (!path) return 0;
+    const char *p = path;
+    while (*p) {
+        const char *colon = strchr(p, ':');
+        size_t len = colon ? (size_t)(colon - p) : strlen(p);
+        if (len > 0 && len < 1024) {
+            char cand[2048];
+            snprintf(cand, sizeof(cand), "%.*s/%s", (int)len, p, name);
+            if (access(cand, X_OK) == 0) { snprintf(out, outlen, "%s", cand); return 1; }
+        }
+        if (!colon) break;
+        p = colon + 1;
+    }
+    return 0;
+}
+
 static int run_builtin(char **argv, int argc, int *handled) {
     *handled = 0;
     if (argc == 0) return 0;
@@ -432,6 +456,33 @@ static int run_builtin(char **argv, int argc, int *handled) {
         if (newline) fputc('\n', stdout);
         fflush(stdout);
         return 0;
+    }
+    if (strcmp(cmd, "command") == 0) {
+        *handled = 1;
+        if (argc >= 3 && strcmp(argv[1], "-v") == 0) {
+            char out[2048];
+            int found = 0;
+            for (int i = 2; i < argc; i++) {
+                if (find_in_path(argv[i], out, sizeof(out))) { printf("%s\n", out); found = 1; }
+            }
+            return found ? 0 : 1;
+        }
+        if (argc >= 2) {                       /* command foo args… → 直接执行 foo */
+            *handled = 0;
+            return 0;
+        }
+        return 0;
+    }
+    if (strcmp(cmd, "type") == 0) {
+        *handled = 1;
+        if (argc < 2) return 1;
+        char out[2048];
+        if (find_in_path(argv[1], out, sizeof(out))) {
+            printf("%s is %s\n", argv[1], out);
+            return 0;
+        }
+        fprintf(stderr, "nsh: type: %s: not found\n", argv[1]);
+        return 1;
     }
     if (strcmp(cmd, "test") == 0 || strcmp(cmd, "[") == 0) {
         *handled = 1;

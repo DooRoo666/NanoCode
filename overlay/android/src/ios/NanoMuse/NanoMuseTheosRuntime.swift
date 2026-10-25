@@ -465,7 +465,7 @@ enum NanoMuseTheosRuntime {
 
     // MARK: - 增量标记
 
-    static let markerVersion = 6
+    static let markerVersion = 7
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {
@@ -511,7 +511,9 @@ enum NanoMuseTheosRuntime {
     static func environment(for root: String) -> [String: String] {
         var env: [String: String] = [:]
         let fm = FileManager.default
-        let bin = [root + "/usr/bin", root + "/bin"].filter { fm.fileExists(atPath: $0) }
+        // Theos 需要 $THEOS/bin（dm.pl / fakeroot.sh …）在 PATH 里
+        var bin = [root + "/usr/bin", root + "/bin"].filter { fm.fileExists(atPath: $0) }
+        if fm.fileExists(atPath: root + "/theos/bin") { bin.append(root + "/theos/bin") }
         let base = NanoMuseHelperRunner.helpersDirectory
         env["PATH"] = (bin + [base, "/usr/bin", "/bin", "/usr/sbin", "/sbin"]).joined(separator: ":")
         let libs = [root + "/usr/lib", root + "/lib"].filter { fm.fileExists(atPath: $0) }
@@ -519,11 +521,16 @@ enum NanoMuseTheosRuntime {
             env["DYLD_LIBRARY_PATH"] = libs.joined(separator: ":")
             env["DYLD_FALLBACK_LIBRARY_PATH"] = libs.joined(separator: ":")
         }
-        // 只有真的带 Theos makefiles 时才叫 THEOS；TheosRuntime 自己不是 Theos 安装树，
-        // 硬塞 THEOS 会让真正的 Theos 工程找不到 makefiles。
+        // THEOS 必须指向真正含 makefiles 的那一层：
+        // 本运行时里是 <root>/theos（同时有 theos/bin、theos/sdks），不是 <root>。
         env["TOOLCHAIN_ROOT"] = root
-        if fm.fileExists(atPath: root + "/makefiles") {
+        if fm.fileExists(atPath: root + "/theos/makefiles") {
+            env["THEOS"] = root + "/theos"
+        } else if fm.fileExists(atPath: root + "/makefiles") {
             env["THEOS"] = root
+        }
+        if fm.fileExists(atPath: root + "/theos/sdks") {
+            env["THEOS_SDK_ROOT"] = root + "/theos/sdks"
         }
         let dpkg = root + "/usr/bin/dpkg-deb"
         if fm.isExecutableFile(atPath: dpkg) {
