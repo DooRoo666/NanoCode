@@ -156,20 +156,20 @@ enum NanoMuseTheosRuntime {
             let lower = path.lowercased()
             let isLibrary = lower.hasSuffix(".dylib") || lower.hasSuffix(".so")
                 || lower.contains(".framework/")
-            var ok = false
-            do {
-                let ents: Data? = isLibrary ? nil : FileManager.default.contents(atPath: ent)
-                try NanoMuseMachSigner.sign(path: path, entitlements: ents)
-                ok = true
-            } catch {
-                // 回退：老路径（对个别 FAT 文件仍可能成功）
-                let args = isLibrary ? ["--adhoc-only", path] : ["--entitlements", ent, path]
-                let run = await Task.detached(priority: .userInitiated) {
-                    NanoMuseHelperRunner.run("codex-sign", arguments: args, timeout: 120)
-                }.value
-                ok = run.exitCode == 0
+            if isLibrary {
+                // 库不签：它们已经通过"依赖重定向"不再被加载
+                report.skipped += 1
+                marker.files[relative(path, to: root)] = fileStamp(path)
+                continue
             }
-            if ok {
+            // 可执行文件用 codex-sign：实测它的签名能被 exec 接受（我们自研的 adhoc
+            // 会被 AMFI 判 EBADARCH）。
+            let run = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run("codex-sign",
+                                         arguments: ["--entitlements", ent, path],
+                                         timeout: 120)
+            }.value
+            if run.exitCode == 0 {
                 report.signed += 1
                 marker.files[relative(path, to: root)] = fileStamp(path)
             } else {
@@ -438,6 +438,7 @@ enum NanoMuseTheosRuntime {
             try await extract(archive, to: installRoot, log: log)
             try? FileManager.default.removeItem(atPath: archive)
             flattenIfSingleSubdir(installRoot)      // 有的压缩包多套一层 TheosRuntime/
+            let fixed = await repointLibraries(root: installRoot, log: log)
         } catch {
             log("ERR \(error.localizedDescription)")
             try? FileManager.default.removeItem(atPath: installRoot)   // 不留下半包
@@ -451,12 +452,35 @@ enum NanoMuseTheosRuntime {
         return true
     }
 
+    /// 把运行时里所有对 `libiosexec` 的依赖改成系统 libSystem。
+    /// 这样工具就不需要 mmap 任何第三方 dylib —— 这正是本机沙盒唯一允许的形态。
+    @discardableResult
+    static func repointLibraries(root: String,
+                                 log: @escaping (String) -> Void) async -> Int {
+        let targets = machOs(under: root)
+        var changed = 0
+        await withTaskGroup(of: Int.self) { group in
+            for path in targets {
+                group.addTask {
+                    (try? NanoMuseMachPatcher.repoint(path: path,
+                                                       matching: "libiosexec",
+                                                       to: "/usr/lib/libSystem.B.dylib")) ?? 0
+                }
+            }
+            for await n in group { changed += n }
+        }
+        return changed
+    }
+
     /// 一键：安装 → 重签 → 自检
     static func prepareAll(log: @escaping (String) -> Void) async -> [String] {
         var lines: [String] = []
         func emit(_ s: String) { lines.append(s); log(s) }
         guard await install(log: emit) else { return lines }
         guard let root = locate() else { emit("ERR 仍找不到 runtime"); return lines }
+        // 已存在的运行时也要重定向（幂等）：把 libiosexec 依赖改到系统 libSystem
+        let patched = await repointLibraries(root: root, log: emit)
+        emit("依赖重定向：\(patched) 个二进制已改为链接系统库")
         let r = await resign(at: root)
         for l in r.lines { emit(l) }
         for l in await smokeTest(root: root) { emit(l) }
@@ -465,7 +489,7 @@ enum NanoMuseTheosRuntime {
 
     // MARK: - 增量标记
 
-    static let markerVersion = 7
+    static let markerVersion = 8
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {
