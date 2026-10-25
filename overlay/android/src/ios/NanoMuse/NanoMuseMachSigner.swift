@@ -42,6 +42,25 @@ enum NanoMuseMachSigner {
     private static let HASH_SIZE = 32
     private static let PAGE_LOG = 12            // 4096
 
+    /// 从 FAT 二进制里取出 arm64（cputype 0x0100000c）那一片
+    private static func arm64Slice(of data: Data) -> Data? {
+        guard data.count >= 8 else { return nil }
+        let nArch = Int(data.be32(4))
+        guard nArch > 0 && nArch < 32 else { return nil }
+        for i in 0..<nArch {
+            let base = 8 + i * 20
+            guard base + 20 <= data.count else { break }
+            let cputype = Int32(bitPattern: data.be32(base))
+            let offset = Int(data.be32(base + 8))
+            let size = Int(data.be32(base + 12))
+            guard offset > 0, size > 0, offset + size <= data.count else { continue }
+            if cputype == 0x0100_000c {          // CPU_TYPE_ARM64
+                return data.subdata(in: offset..<(offset + size))
+            }
+        }
+        return nil
+    }
+
     /// 给一个 thin Mach-O 打 ad-hoc 签名（原地覆写）
     /// - Parameters:
     ///   - path: 目标文件
@@ -55,9 +74,15 @@ enum NanoMuseMachSigner {
 
         let magic = data.le32(0)
         if magic == FAT_MAGIC || magic == FAT_CIGAM {
-            throw SignError(message: "FAT 二进制暂不支持：\(path)")
+            // FAT：取出 arm64 那一片改写成 thin（iOS 上反正只跑 arm64），
+            // 再走正常签名流程。59 个失败文件基本都卡在这里。
+            guard let slice = arm64Slice(of: data) else {
+                throw SignError(message: "FAT 里没有 arm64 片：\(path)")
+            }
+            try slice.write(to: URL(fileURLWithPath: path))
+            data = slice
         }
-        guard magic == MH_MAGIC_64 || magic == MH_CIGAM_64 else {
+        guard data.le32(0) == MH_MAGIC_64 || data.le32(0) == MH_CIGAM_64 else {
             throw SignError(message: "不是 Mach-O 64：\(path)")
         }
 
@@ -98,12 +123,10 @@ enum NanoMuseMachSigner {
         }
         guard let linkedit = linkset else { throw SignError(message: "没有 __LINKEDIT") }
 
-        // 截掉旧签名（如果有），从干净的尾部开始
+        // **不裁剪任何字节**：旧签名原样留在文件里（成为无用数据），
+        // 新签名一律追加到文件末尾，只改 LC_CODE_SIGNATURE 指向它。
+        // 之前按旧 dataoff 裁剪过，结果把真实内容截断了（clang-16 从 76 KB 掉到 53 KB）。
         var base = data
-        if let sig = sigCmd, sig.dataoff > 0, sig.dataoff <= base.count {
-            base = base.subdata(in: 0..<sig.dataoff)
-        }
-        // 按 16 字节对齐放置签名
         while base.count % 16 != 0 { base.append(0) }
         let codeLimit = base.count
 
@@ -244,6 +267,10 @@ enum NanoMuseMachSigner {
         }
         if !fixed { throw SignError(message: "找不到 __LINKEDIT") }
 
+        // 自检：文件必须仍以 Mach-O magic 开头，且不小于签名前
+        guard out.count > codeLimit, out.le32(0) == MH_MAGIC_64 || out.le32(0) == MH_CIGAM_64 else {
+            throw SignError(message: "签名后结构异常：\(path)")
+        }
         try out.write(to: URL(fileURLWithPath: path))
     }
 
@@ -283,6 +310,13 @@ private extension Data {
             v = (v << 8) | UInt64(self[startIndex + offset + i])
         }
         return v
+    }
+    func be32(_ offset: Int) -> UInt32 {
+        guard offset + 4 <= count else { return 0 }
+        return (UInt32(self[startIndex + offset]) << 24)
+            | (UInt32(self[startIndex + offset + 1]) << 16)
+            | (UInt32(self[startIndex + offset + 2]) << 8)
+            | UInt32(self[startIndex + offset + 3])
     }
     func str(_ offset: Int, _ len: Int) -> String {
         guard offset + len <= count else { return "" }

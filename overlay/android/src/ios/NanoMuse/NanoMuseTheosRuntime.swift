@@ -465,7 +465,7 @@ enum NanoMuseTheosRuntime {
 
     // MARK: - 增量标记
 
-    static let markerVersion = 4
+    static let markerVersion = 5
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {
