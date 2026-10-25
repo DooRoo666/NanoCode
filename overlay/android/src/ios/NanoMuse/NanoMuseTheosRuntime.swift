@@ -147,11 +147,26 @@ enum NanoMuseTheosRuntime {
         }
 
         for path in pending {
-            let run = await Task.detached(priority: .userInitiated) {
-                NanoMuseHelperRunner.run("codex-sign",
-                                         arguments: ["--entitlements", ent, path],
-                                         timeout: 120)
+            // dylib / framework 用 adhoc 模式：带 entitlements 会写成 App Store 风格的
+            // CD（含 CMS），AMFI 在**加载库**时按 Apple 锚点校验 → "code signature invalid"。
+            // 可执行文件仍用 entitlements（需要 no-sandbox / platform-application）。
+            let lower = path.lowercased()
+            let isLibrary = lower.hasSuffix(".dylib") || lower.hasSuffix(".so")
+                || lower.contains(".framework/")
+            let args: [String] = isLibrary
+                ? ["--adhoc-only", path]
+                : ["--entitlements", ent, path]
+            var run = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run("codex-sign", arguments: args, timeout: 120)
             }.value
+            if run.exitCode != 0, isLibrary {
+                // adhoc 里用到的 Security API 可能在某些上下文不可用；回退到 entitlements
+                run = await Task.detached(priority: .userInitiated) {
+                    NanoMuseHelperRunner.run("codex-sign",
+                                             arguments: ["--entitlements", ent, path],
+                                             timeout: 120)
+                }.value
+            }
             if run.exitCode == 0 {
                 report.signed += 1
                 marker.files[relative(path, to: root)] = fileStamp(path)
@@ -424,7 +439,7 @@ enum NanoMuseTheosRuntime {
 
     // MARK: - 增量标记
 
-    static let markerVersion = 1
+    static let markerVersion = 2
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {
