@@ -103,14 +103,15 @@ FORKTEST_SRC="$ROOT/Tools/forkless-sh/forktest.c"
 if [ -f "$FORKTEST_SRC" ] && command -v xcrun >/dev/null 2>&1; then
   SDKDIR2="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
   if [ -n "$SDKDIR2" ]; then
-    for arch in arm64 arm64e; do
-      OUT="$TARGET/Helpers/forktest-$arch"
-      if xcrun --sdk iphoneos clang -arch "$arch" -miphoneos-version-min=15.0 \
-          -O1 -isysroot "$SDKDIR2" -o "$OUT" "$FORKTEST_SRC" 2>&1; then
-        chmod 0755 "$OUT"
-        echo "   forktest-$arch 编译完成"
+    # 注意：变量名不要用 OUT —— 那是后面打包步骤的输出目录，会被覆盖
+    for ft_arch in arm64 arm64e; do
+      FT_OUT="$TARGET/Helpers/forktest-$ft_arch"
+      if xcrun --sdk iphoneos clang -arch "$ft_arch" -miphoneos-version-min=15.0 \
+          -O1 -isysroot "$SDKDIR2" -o "$FT_OUT" "$FORKTEST_SRC" 2>&1; then
+        chmod 0755 "$FT_OUT"
+        echo "   forktest-$ft_arch 编译完成"
       else
-        echo "   warning: forktest-$arch 编译失败" >&2
+        echo "   warning: forktest-$ft_arch 编译失败" >&2
       fi
     done
   fi

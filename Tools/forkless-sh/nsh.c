@@ -46,14 +46,6 @@ static int g_should_exit = 0;
 
 static void set_last(int status) { g_last_status = status; }
 
-static char *xstrndup(const char *s, size_t n) {
-    char *out = (char *)malloc(n + 1);
-    if (!out) exit(1);
-    memcpy(out, s, n);
-    out[n] = '\0';
-    return out;
-}
-
 /* 在顶层（引号外）查找分隔符；返回位置或 NULL。 */
 static char *find_top(char *s, const char *needles[], int count, int *which) {
     int in_s = 0, in_d = 0;
