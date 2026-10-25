@@ -832,13 +832,23 @@ static int eval(char *line) {
  * 找不到 bash.real 时返回 -1，调用方继续用 nsh 自己解析（会给出明确报错）。
  */
 static int delegate_to_bash(const char *script) {
-    const char *p = script;
-    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
     static const char *kw[] = { "for ", "while ", "until ", "if ", "case ", "select ", "function " };
+    /* 逐条语句看（脚本开头、换行后、分号后）。只看开头是不够的：
+       实际调用几乎都是多行的 "echo ...; for ...; done"，开头永远是 echo。 */
     int match = 0;
-    for (size_t i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
-        size_t n = strlen(kw[i]);
-        if (strncmp(p, kw[i], n) == 0) { match = 1; break; }
+    int at_stmt_start = 1;
+    for (const char *p = script; *p && !match; p++) {
+        if (at_stmt_start) {
+            const char *q = p;
+            while (*q == ' ' || *q == '\t') q++;
+            for (size_t i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
+                size_t n = strlen(kw[i]);
+                if (strncmp(q, kw[i], n) == 0) { match = 1; break; }
+            }
+            at_stmt_start = 0;
+            if (match) break;
+        }
+        if (*p == '\n' || *p == ';') at_stmt_start = 1;
     }
     if (!match) return -1;
 
