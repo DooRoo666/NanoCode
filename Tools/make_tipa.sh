@@ -33,15 +33,21 @@ if grep -q "<key>com.apple.developer.kernel.extended-virtual-addressing</key>" "
   exit 1
 fi
 
-# 反向守卫：这两个键是 TheosRuntime 能跑起来的**唯一**前提。
-# 一旦有人"清理"掉，表现就是 clang-16 报
+# 正向守卫：runtime 模板必须带 disable-library-validation。
+# 少了它的表现是 clang-16 报
 #   Library not loaded: @rpath/libiosexec.1.dylib / sandbox blocked mmap()
-# 而且极难从现象倒推回权限，所以在构建期直接拦住。
-for k in com.apple.security.cs.disable-library-validation \
-         com.apple.security.cs.allow-unsigned-executable-memory; do
+# 极难从现象倒推回权限，所以在构建期直接拦住。
+if ! grep -q "<key>com.apple.security.cs.disable-library-validation</key>" "$RUNTIME_ENT"; then
+  echo "error: runtime 模板缺 disable-library-validation（TheosRuntime 会加载失败）" >&2
+  exit 1
+fi
+
+# 反向守卫：这两条是 macOS Hardened Runtime 的键，iOS 上属非法授权。
+# AMFI 会拒绝**整份**签名，表现是 App 一启动就闪退 —— 比功能失效更难查。
+for bad in dynamic-codesigning com.apple.security.cs.allow-unsigned-executable-memory; do
   for f in "$MAIN_ENT" "$RUNTIME_ENT"; do
-    if ! grep -q "<key>$k</key>" "$f"; then
-      echo "error: $(basename "$f") 缺少 $k（TheosRuntime 会加载失败）" >&2
+    if grep -q "<key>${bad}</key>" "$f"; then
+      echo "error: $(basename "${f}") 含 iOS 非法键 ${bad}（AMFI 会拒签导致闪退）" >&2
       exit 1
     fi
   done
