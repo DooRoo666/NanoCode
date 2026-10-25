@@ -763,6 +763,9 @@ static int run_segment(char *text) {
     return 1;
 }
 
+/* 控制流脚本委托给 bash.real（实现见文件末尾） */
+static int delegate_to_bash(const char *script);
+
 /* ---------- 顶层：按 ; && || 顺序/条件执行 ---------- */
 
 static int eval(char *line) {
@@ -831,26 +834,28 @@ static int eval(char *line) {
  * 两者互补：控制流交给 bash（它只用内建、不 fork），管道/重定向留在 nsh。
  * 找不到 bash.real 时返回 -1，调用方继续用 nsh 自己解析（会给出明确报错）。
  */
+/* 整段交给 bash 执行（仅在脚本里没有管道/命令替换时调用）。
+   为什么加这个条件：bash 的 `|`、`$()`、重定向都靠 fork，iOS 上必 SIGBUS；
+   带这些语法的脚本宁可让 nsh 自己跑（管道能通），也不要整段丢给 bash 全崩。 */
 static int delegate_to_bash(const char *script) {
     static const char *kw[] = { "for ", "while ", "until ", "if ", "case ", "select ", "function " };
-    /* 逐条语句看（脚本开头、换行后、分号后）。只看开头是不够的：
-       实际调用几乎都是多行的 "echo ...; for ...; done"，开头永远是 echo。 */
-    int match = 0;
-    int at_stmt_start = 1;
-    for (const char *p = script; *p && !match; p++) {
-        if (at_stmt_start) {
+    int need = 0, at_start = 1;
+    for (const char *p = script; *p && !need; p++) {
+        if (at_start) {
             const char *q = p;
             while (*q == ' ' || *q == '\t') q++;
             for (size_t i = 0; i < sizeof(kw) / sizeof(kw[0]); i++) {
-                size_t n = strlen(kw[i]);
-                if (strncmp(q, kw[i], n) == 0) { match = 1; break; }
+                if (strncmp(q, kw[i], strlen(kw[i])) == 0) { need = 1; break; }
             }
-            at_stmt_start = 0;
-            if (match) break;
+            at_start = 0;
+            if (need) break;
         }
-        if (*p == '\n' || *p == ';') at_stmt_start = 1;
+        if (*p == '\n' || *p == ';') at_start = 1;
     }
-    if (!match) return -1;
+    if (!need) return -1;
+    /* 有管道 / 命令替换 / 重定向 → 不委托 */
+    if (strchr(script, '|') || strstr(script, "$(") || strchr(script, '>') || strchr(script, '<'))
+        return -1;
 
     char path[PATH_MAX];
     const char *self = self_path();

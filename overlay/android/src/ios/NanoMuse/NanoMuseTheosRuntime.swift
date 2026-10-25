@@ -220,6 +220,7 @@ enum NanoMuseTheosRuntime {
     struct Part {
         let name: String
         let url: String
+        var expectedSize: Int = 0
     }
 
     /// 从清单里取 theos 运行时的分片列表
@@ -245,83 +246,120 @@ enum NanoMuseTheosRuntime {
         let raw = (theos["archive_parts"] as? [[String: Any]]) ?? []
         let parts: [Part] = raw.compactMap { p in
             guard let url = p["url"] as? String else { return nil }
-            return Part(name: (p["name"] as? String) ?? "part", url: url)
+            let size = (p["size"] as? NSNumber)?.intValue ?? 0
+            return Part(name: (p["name"] as? String) ?? "part", url: url, expectedSize: size)
         }
         if parts.isEmpty, let single = theos["archive_url"] as? String {
-            return [Part(name: "TheosRuntime.tar.gz", url: single)]
+            let size = (theos["download_size"] as? NSNumber)?.intValue ?? 0
+            return [Part(name: "TheosRuntime.tar.gz", url: single, expectedSize: size)]
         }
         return parts
     }
 
-    /// 逐片下载并拼接成一个文件（1 MB 一块写盘，避免把 224 MB 全塞进内存）
+    /// 下载进度回调（URLSession 的 task delegate，只在 async download 里可用）
+    final class ProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        private let onProgress: @Sendable (Int64, Int64) -> Void
+        private var lastLogged: Int64 = 0
+        private let step: Int64
+        init(step: Int64 = 20 << 20, onProgress: @escaping @Sendable (Int64, Int64) -> Void) {
+            self.step = step
+            self.onProgress = onProgress
+        }
+        func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                        didWriteData bytesWritten: Int64,
+                        totalBytesWritten: Int64,
+                        totalBytesExpectedToWrite: Int64) {
+            if totalBytesWritten - lastLogged >= step {
+                lastLogged = totalBytesWritten
+                onProgress(totalBytesWritten, totalBytesExpectedToWrite)
+            }
+        }
+    }
+
+    /// 逐片下载并拼接成一个文件。用 URLSession 的流式下载（落盘，不进内存），
+    /// 每 20MB 报一次进度；下完校验字节数与清单一致。
     static func download(_ parts: [Part], to dest: String,
                          log: @escaping (String) -> Void) async throws {
-        try? FileManager.default.removeItem(atPath: dest)
-        FileManager.default.createFile(atPath: dest, contents: nil)
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: dest)
+        fm.createFile(atPath: dest, contents: nil)
         guard let out = FileHandle(forWritingAtPath: dest) else {
             throw NSError(domain: "NanoTheos", code: 4,
-                          userInfo: [NSLocalizedDescriptionKey: "无法创建下载文件"])
+                          userInfo: [NSLocalizedDescriptionKey: "无法创建下载文件 \(dest)"])
         }
         defer { try? out.close() }
 
-        var total = 0
+        var total: Int64 = 0
         for (i, part) in parts.enumerated() {
             log("  下载 \(i + 1)/\(parts.count)：\(part.name)")
-            var succeeded = false
+            var ok = false
             for prefix in ([""] + proxies) {
                 guard let u = URL(string: prefix + part.url) else { continue }
                 do {
                     var req = URLRequest(url: u)
-                    req.timeoutInterval = 600
-                    let (tmp, resp) = try await URLSession.shared.download(for: req)
-                    guard (resp as? HTTPURLResponse)?.statusCode == 200 else { continue }
+                    req.timeoutInterval = 1800
+                    let logger = ProgressDelegate { done, expected in
+                        let d = Double(done) / 1048576
+                        let e = expected > 0 ? String(format: " / %.0f MB", Double(expected) / 1048576) : ""
+                        log(String(format: "    %.0f MB%@", d, e))
+                    }
+                    let (tmp, resp) = try await URLSession.shared.download(for: req, delegate: logger)
+                    guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                        log("    HTTP \((resp as? HTTPURLResponse)?.statusCode ?? -1)")
+                        continue
+                    }
+                    let size = (try? fm.attributesOfItem(atPath: tmp.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    if part.expectedSize > 0, size != Int64(part.expectedSize) {
+                        log("    大小不符：\(size) != \(part.expectedSize)，换源重试")
+                        try? fm.removeItem(at: tmp)
+                        continue
+                    }
                     let h = try FileHandle(forReadingFrom: tmp)
                     defer { try? h.close() }
                     while true {
                         let chunk = try h.read(upToCount: 1 << 20) ?? Data()
                         if chunk.isEmpty { break }
                         try out.write(contentsOf: chunk)
-                        total += chunk.count
+                        total += Int64(chunk.count)
                     }
-                    try? FileManager.default.removeItem(at: tmp)
-                    succeeded = true
+                    try? fm.removeItem(at: tmp)
+                    ok = true
                     break
                 } catch {
-                    log("    直连/镜像失败：\(error.localizedDescription)")
+                    log("    失败：\(error.localizedDescription)")
                 }
             }
-            if !succeeded {
+            if !ok {
                 throw NSError(domain: "NanoTheos", code: 5,
-                              userInfo: [NSLocalizedDescriptionKey: "分片 \(part.name) 下载失败"])
+                              userInfo: [NSLocalizedDescriptionKey: "分片 \(part.name) 下载失败（直连与代理都不通）"])
             }
         }
         log("  合计 \(String(format: "%.1f", Double(total) / 1048576)) MB")
     }
 
-    /// 用随包的 ca-filetool 解包（它是多调用二进制，要靠 argv[0] == "tar" 分派）
+    /// 解包：用随包的 tarx（只链 libSystem + libz），不走 ca-filetool 的 tar
+    /// —— 那个只实现了 create 模式，`tar -xzf` 会直接报
+    ///    "only create mode (-c) is supported"。
     static func extract(_ archive: String, to dest: String,
                         log: @escaping (String) -> Void) async throws {
         try? FileManager.default.createDirectory(atPath: dest, withIntermediateDirectories: true)
-        let tool = NanoMuseHelperRunner.path("ca-filetool")
+        let tool = NanoMuseHelperRunner.path("tarx")
         guard FileManager.default.isExecutableFile(atPath: tool) else {
             throw NSError(domain: "NanoTheos", code: 6,
-                          userInfo: [NSLocalizedDescriptionKey: "缺少 ca-filetool，无法解包"])
+                          userInfo: [NSLocalizedDescriptionKey: "缺少随包的 tarx（构建时没编译进来）"])
         }
-        let tmpDir = NSTemporaryDirectory() + "theos-tar-\(UUID().uuidString)"
-        try? FileManager.default.createDirectory(atPath: tmpDir, withIntermediateDirectories: true)
-        let link = tmpDir + "/tar"
-        try? FileManager.default.removeItem(atPath: link)
-        try? FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: tool)
-
-        // 解包 224 MB 可能要几十秒到几分钟，别占着主线程
+        log("  解包中（224 MB → 约 1 GB，需要几分钟）…")
         let run = await Task.detached(priority: .userInitiated) {
-            NanoMuseHelperRunner.run(link, arguments: ["-xzf", archive, "-C", dest], timeout: 1800)
+            NanoMuseHelperRunner.run(tool, arguments: ["-xf", archive, "-C", dest], timeout: 3600)
         }.value
-        log("  tar rc=\(run.exitCode)")
+        log("  tarx rc=\(run.exitCode)")
         if run.exitCode != 0 {
-            for l in run.output.split(separator: "\n").suffix(6) { log("    " + String(l)) }
+            for l in run.output.split(separator: "\n").suffix(8) { log("    " + String(l)) }
             throw NSError(domain: "NanoTheos", code: 7,
                           userInfo: [NSLocalizedDescriptionKey: "解包失败（见上）"])
+        }
+        if !run.output.isEmpty {
+            for l in run.output.split(separator: "\n").suffix(3) { log("    " + String(l)) }
         }
     }
 

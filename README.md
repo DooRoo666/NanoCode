@@ -73,7 +73,7 @@ iOS 的 SDK 把 `fork()` 标为 unavailable，而 bash 的管道 / 重定向 / �
 | 参数 `-c` / `-lc` / `-ec` / `-i` | 按字符解析标志位 | ✅ |
 | `test` / `[`（`-e -f -d -x -r -w -s -z -n` / `=` `!=` / `-eq -ne -lt -gt -le -ge`） | 内建 | ✅ |
 | 行首 `!` 取反 | 顶层切分后对结果取反 | ✅ |
-| `for` / `while` / `until` / `if` / `case` / `function` | 整段委托给同目录 `bash.real -c`（控制流只用内建，不 fork） | ✅ |
+| `for` / `while` / `until` / `if` / `case` / `function` | 整段委托给同目录 `bash.real -c`；**仅当脚本里没有 `\|` `$(` `>` `<`** 时才委托 | ✅（带管道的循环会退回 nsh 解析，报 `nsh: for:` 但不崩） |
 | `( )` 子 shell / `&` 后台 | —— | ❌ 仍不支持 |
 
 > 构建时如果 nsh 编译成功，`Helpers/{sh,bash,bash-codex}` 会自动改指向 nsh
@@ -113,6 +113,22 @@ Documents/TheosRuntime               # Files App 可直接投放
 2. 用随包的 `ca-filetool`（argv[0] 分派成 `tar`）解包到 `<Library>/TheosRuntime`；
 3. 增量重签（`.nanomuse-resign.json`）；
 4. `smokeTest` 逐个跑 `clang-16 / make / ldid / dpkg-deb --version`，直接给 OK / FAIL。
+
+### 为什么自己要写 `tarx`
+
+iOS 没有 `tar`；随包的 `ca-filetool` 的 tar **只实现了 create 模式**：
+
+```
+$ tar -tzf TheosRuntime.tar.gz
+tar: unsupported short option: -t
+$ tar
+tar: only create mode (-c) is supported
+```
+
+而 TheosRuntime 是 224 MB 的 `.tar.gz`。`Tools/forkless-sh/tarx.c` 是自带的解包器
+（gzip 用系统 libz，tar 解析自己写），支持目录/普通文件/符号链接/硬链接、
+GNU 长名（`L`/`K`）、pax 扩展头（`x`/`g`）、`--strip-components`，
+并拒绝绝对路径与 `..` 越界。
 
 ### 重签是增量 + 自动的
 

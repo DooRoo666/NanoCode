@@ -126,6 +126,23 @@ else
   echo "   (跳过：没有 nsh.c 或 xcrun)"
 fi
 
+echo "== 0a2/4 编译 tarx（自带的 .tar.gz 解包器） =="
+# iOS 没有 tar；ca-filetool 的 tar 只实现 create 模式，解不了 TheosRuntime。
+# tarx 只链 libSystem + libz，没有第三方 dylib，所以不需要关 library validation。
+TARX_SRC="$ROOT/Tools/forkless-sh/tarx.c"
+if [ -f "$TARX_SRC" ] && command -v xcrun >/dev/null 2>&1; then
+  SDKTX="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
+  if [ -n "$SDKTX" ] && xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 \
+      -O2 -Wall -isysroot "$SDKTX" -lz -o "$TARGET/Helpers/tarx" "$TARX_SRC"; then
+    chmod 0755 "$TARGET/Helpers/tarx"
+    echo "   tarx 编译完成：$(du -h "$TARGET/Helpers/tarx" | cut -f1)"
+  else
+    echo "   warning: tarx 编译失败，TheosRuntime 将无法解包" >&2
+  fi
+else
+  echo "   (跳过：没有 tarx.c 或 xcrun)"
+fi
+
 echo "== 0b/4 编译 fork 对照实验（arm64 vs arm64e） =="
 # 同一份代码编两个架构：用来分辨「fork 被内核拒绝」还是「arm64e 的 PAC 让它崩」。
 FORKTEST_SRC="$ROOT/Tools/forkless-sh/forktest.c"
