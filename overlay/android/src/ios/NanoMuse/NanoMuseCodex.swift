@@ -878,6 +878,10 @@ public enum NanoMuseCodex {
             // 只能写全路径。这里把它接进 PATH / DYLD，codex 才算真的能编译。
             var runtimePath: [String] = []
             if let rtRoot = NanoMuseTheosRuntime.locate() {
+                // 首次（或 entitlements 变更后）在后台把 runtime 重签一遍：
+                // 不重签 → clang-16 加载 libiosexec 时被 library validation 拦成
+                // "sandbox blocked mmap()"。有 .nanomuse-resign.json 时直接跳过。
+                NanoMuseTheosRuntime.prepareInBackground()
                 let rtEnv = NanoMuseTheosRuntime.environment(for: rtRoot)
                 if let p = rtEnv["PATH"] {
                     runtimePath = p.split(separator: ":").map(String.init)

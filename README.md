@@ -87,3 +87,14 @@ iOS 的 SDK 把 `fork()` 标为 unavailable，而 bash 的管道 / 重定向 / �
    「准备 TheosRuntime（定位 + 重签 dylib 权限）」。
 2. **必须进 PATH**：`NanoMuseCodex` 启动 codex 时会把 runtime 的 `usr/bin` 与
    `usr/lib` 接到 `PATH` / `DYLD_*`，否则 codex 里敲 `clang` 永远 127。
+
+### 重签是增量 + 自动的
+
+- 首次启动 codex（或 entitlements 变更后）会在**后台**把 runtime 里 373 个 Mach-O
+  重签一遍；结果写进 `<runtime>/.nanomuse-resign.json`（记录 entitlements 指纹 +
+  每个文件的 size/mtime）。之后启动只做一次 stat 比对，不重签。
+- **原地重签，不复制**：不搬 MT-Agent 的运行时，也不改它的目录布局，
+  只覆盖签名本身；文件内容（代码段/资源）保持原样。
+- 设置页「准备 TheosRuntime」按钮会额外跑一次 `smokeTest`：
+  依次执行 `clang-16 --version` / `make --version` / `ldid -h` / `dpkg-deb --version`，
+  直接给出 OK / FAIL，不用再去猜是哪一层被拦。

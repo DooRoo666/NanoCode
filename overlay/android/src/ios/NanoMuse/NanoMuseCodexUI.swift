@@ -166,6 +166,7 @@ struct NanoMuseCodexView: View {
                         await NanoMuseTheosRuntime.resign(at: root)
                     }.value
                     for line in report.lines { append(line) }
+                    for line in await NanoMuseTheosRuntime.smokeTest(root: root) { append(line) }
                     let env = NanoMuseTheosRuntime.environment(for: root)
                     append("PATH = \(env["PATH"] ?? "")")
                 }
