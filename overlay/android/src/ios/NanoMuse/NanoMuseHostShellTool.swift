@@ -17,8 +17,11 @@ enum NanoMuseHostShellTool {
             Run a shell command on the HOST (iOS) side, outside the iSH Linux sandbox, using the app's own \
             TrollStore entitlements. Use it when you need real device paths (e.g. /private/var/mobile/..., \
             other apps' containers), real /dev nodes, or anything iSH's fake filesystem cannot see. \
-            Available binaries: bash builtins plus onPath helpers (cat, ls, grep, tar, xxd, sed … from ca-filetool) \
-            and codex-sign. For Linux tooling (git/python/apk) keep using shell_execute instead.
+            The shell is nsh (forkless, posix_spawn based): pipes `a | b`, redirections `> >> < 2> 2>&1`, \
+            `;` `&&` `||`, leading `!`, `$VAR` `${VAR}` `$?` `$$`, `VAR=value`, `$( )`, globs, `cd`, `export`, \
+            `test` / `[`, plus onPath helpers (cat, ls, grep, tar, xxd, sed … from ca-filetool) and codex-sign \
+            are all supported. Not supported: `( )` subshell, `&` background, `for` / `if` / functions. \
+            For Linux tooling (git/python/apk) keep using shell_execute instead.
             """,
             parameters: [
                 "tool_title": AgentToolParam(type: .string, description: "A concise 5-10 word summary shown to the user. Use the user's language."),

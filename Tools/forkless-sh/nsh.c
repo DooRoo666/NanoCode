@@ -340,6 +340,44 @@ static int expand_globs(char **argv, int argc, char *storage, size_t storage_siz
 
 /* ---------- 内建命令 ---------- */
 
+/* test / [ 内建：脚本里 `test -d x || mkdir x` 极常见，
+   而 iOS 上既没有 /usr/bin/test 也没有 `[`，只能自己实现常用子集。 */
+static int eval_test(char **a, int n) {
+    int negate = 0, i = 0;
+    while (i < n && strcmp(a[i], "!") == 0) { negate = !negate; i++; }
+    n -= i; a += i;
+    int r = 0;
+    struct stat st;
+    if (n <= 0) {
+        r = 0;
+    } else if (n == 1) {
+        r = (a[0][0] != '\0');
+    } else if (n == 2) {
+        const char *op = a[0], *v = a[1];
+        if (strcmp(op, "-e") == 0) r = stat(v, &st) == 0;
+        else if (strcmp(op, "-f") == 0) r = stat(v, &st) == 0 && S_ISREG(st.st_mode);
+        else if (strcmp(op, "-d") == 0) r = stat(v, &st) == 0 && S_ISDIR(st.st_mode);
+        else if (strcmp(op, "-L") == 0) { struct stat ls; r = lstat(v, &ls) == 0 && S_ISLNK(ls.st_mode); }
+        else if (strcmp(op, "-x") == 0) r = access(v, X_OK) == 0;
+        else if (strcmp(op, "-r") == 0) r = access(v, R_OK) == 0;
+        else if (strcmp(op, "-w") == 0) r = access(v, W_OK) == 0;
+        else if (strcmp(op, "-s") == 0) r = stat(v, &st) == 0 && st.st_size > 0;
+        else if (strcmp(op, "-z") == 0) r = (v[0] == '\0');
+        else if (strcmp(op, "-n") == 0) r = (v[0] != '\0');
+    } else if (n == 3) {
+        const char *l = a[0], *op = a[1], *rr = a[2];
+        if (strcmp(op, "=") == 0 || strcmp(op, "==") == 0) r = strcmp(l, rr) == 0;
+        else if (strcmp(op, "!=") == 0) r = strcmp(l, rr) != 0;
+        else if (strcmp(op, "-eq") == 0) r = atol(l) == atol(rr);
+        else if (strcmp(op, "-ne") == 0) r = atol(l) != atol(rr);
+        else if (strcmp(op, "-lt") == 0) r = atol(l) < atol(rr);
+        else if (strcmp(op, "-gt") == 0) r = atol(l) > atol(rr);
+        else if (strcmp(op, "-le") == 0) r = atol(l) <= atol(rr);
+        else if (strcmp(op, "-ge") == 0) r = atol(l) >= atol(rr);
+    }
+    return negate ? !r : r;
+}
+
 static int run_builtin(char **argv, int argc, int *handled) {
     *handled = 0;
     if (argc == 0) return 0;
@@ -394,6 +432,12 @@ static int run_builtin(char **argv, int argc, int *handled) {
         if (newline) fputc('\n', stdout);
         fflush(stdout);
         return 0;
+    }
+    if (strcmp(cmd, "test") == 0 || strcmp(cmd, "[") == 0) {
+        *handled = 1;
+        int n = argc - 1;
+        if (strcmp(cmd, "[") == 0 && n > 0 && strcmp(argv[argc - 1], "]") == 0) n--;
+        return eval_test(argv + 1, n) ? 0 : 1;
     }
     if (strcmp(cmd, "printf") == 0) {
         *handled = 1;
@@ -746,7 +790,21 @@ static int eval(char *line) {
         if (last_op == 2 && result != 0) skip = 1;   /* && 前一条失败 */
         if (last_op == 3 && result == 0) skip = 1;   /* || 前一条成功 */
         if (!skip && *segment) {
-            result = run_segment(segment);
+            /* 行首的 `!` 是否定整条管道（POSIX 保留字），不能当成命令去 spawn */
+            int neg = 0;
+            char *seg = segment;
+            while (*seg == ' ' || *seg == '\t') seg++;
+            if (seg[0] == '!' && (seg[1] == ' ' || seg[1] == '\t' || seg[1] == '\0')) {
+                neg = 1;
+                seg++;
+                while (*seg == ' ' || *seg == '\t') seg++;
+            }
+            if (*seg) {
+                result = run_segment(seg);
+                if (neg) result = (result == 0) ? 1 : 0;
+            } else {
+                result = neg ? 0 : g_last_status;
+            }
             set_last(result);
         }
         if (g_should_exit) return result;

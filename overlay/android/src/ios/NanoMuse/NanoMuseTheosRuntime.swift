@@ -325,6 +325,25 @@ enum NanoMuseTheosRuntime {
         }
     }
 
+    /// 解包后如果只有一个子目录（例如包内是 TheosRuntime/usr/...），把内容提到根上
+    static func flattenIfSingleSubdir(_ root: String) {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: root + "/usr") { return }
+        let keys: [URLResourceKey] = [.isDirectoryKey]
+        guard let items = try? fm.contentsOfDirectory(at: URL(fileURLWithPath: root),
+                                                     includingPropertiesForKeys: keys,
+                                                     options: [.skipsHiddenFiles]) else { return }
+        let dirs = items.filter { url in
+            let v = try? url.resourceValues(forKeys: Set(keys))
+            return (v?.isDirectory ?? false)
+        }
+        guard dirs.count == 1, let names = try? fm.contentsOfDirectory(atPath: dirs[0].path) else { return }
+        for name in names {
+            try? fm.moveItem(atPath: dirs[0].path + "/" + name, toPath: root + "/" + name)
+        }
+        try? fm.removeItem(at: dirs[0])
+    }
+
     /// 安装到自己的容器；已存在则直接返回
     static func install(log: @escaping (String) -> Void) async -> Bool {
         if let root = locate() {
@@ -339,8 +358,10 @@ enum NanoMuseTheosRuntime {
             try await download(parts, to: archive, log: log)
             try await extract(archive, to: installRoot, log: log)
             try? FileManager.default.removeItem(atPath: archive)
+            flattenIfSingleSubdir(installRoot)      // 有的压缩包多套一层 TheosRuntime/
         } catch {
             log("ERR \(error.localizedDescription)")
+            try? FileManager.default.removeItem(atPath: installRoot)   // 不留下半包
             return false
         }
         guard looksLikeRuntime(installRoot) else {

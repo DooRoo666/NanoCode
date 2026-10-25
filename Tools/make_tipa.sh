@@ -110,6 +110,15 @@ if [ -f "$NSH_SRC" ] && command -v xcrun >/dev/null 2>&1; then
   fi
   if [ "$NSH_OK" = "1" ]; then
     echo "   nsh 编译完成：$(du -h "$TARGET/Helpers/nsh" | cut -f1)"
+    # MT 原版把 Helpers/{sh,bash,bash-codex} 指向 bash.real，而 bash.real 一到
+    # 管道 / 重定向 / 子 shell / $( ) 就 SIGBUS。nsh 语义覆盖到同样的子集，
+    # 且全程 posix_spawn，所以编译成功时就把这几个别名切过来。
+    # （nsh 没编出来时保持指向 bash.real，至少单命令还能用。）
+    for alias in sh bash bash-codex; do
+      rm -f "$TARGET/Helpers/$alias"
+      ln -s nsh "$TARGET/Helpers/$alias"
+    done
+    echo "   Helpers/{sh,bash,bash-codex} → nsh"
   else
     echo "   warning: nsh 编译失败，codex 仍会退回 bash.real（fork 会崩）" >&2
   fi
