@@ -179,8 +179,12 @@ enum NanoMuseMachSigner {
         cd.append(identData)
         // 特殊槽位必须 4 字节对齐
         while cd.count % 4 != 0 { cd.append(0) }
-        let hashOffset = UInt32(cd.count)
+        // 关键：hashOffset 必须指向 **code slot 0**，
+        // 特殊槽位（-1 … -nSpecialSlots）紧挨在它**前面**。
+        // 之前把 hashOffset 指向了特殊槽位起点，AMFI 于是把 ident 区当成哈希 →
+        // 整个 CodeDirectory 判无效，spawn 直接返回 EBADARCH（Bad executable）。
         cd.append(specialHashes)
+        let hashOffset = UInt32(cd.count)
         cd.append(codeHashes)
         cd.setLE32(4, UInt32(cd.count))
         cd.setLE32(16, hashOffset)
