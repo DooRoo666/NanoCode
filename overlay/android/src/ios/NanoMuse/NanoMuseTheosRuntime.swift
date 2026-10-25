@@ -457,6 +457,25 @@ enum NanoMuseTheosRuntime {
     @discardableResult
     static func repointLibraries(root: String,
                                  log: @escaping (String) -> Void) async -> Int {
+        // 优先用随包的 C 工具：确定性高、能打印每个被改写的文件。
+        // （Swift 版曾因为并行 + try? 吞掉异常，静默返回 0。）
+        let tool = NanoMuseHelperRunner.path("machrepoint")
+        if FileManager.default.isExecutableFile(atPath: tool) {
+            let run = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run(tool,
+                                         arguments: ["-r", root, "libiosexec",
+                                                     "/usr/lib/libSystem.B.dylib"],
+                                         timeout: 600)
+            }.value
+            let lines = run.output.split(separator: "\n")
+            let patched = lines.filter { $0.hasPrefix("patched ") }.count
+            log("  machrepoint rc=\(run.exitCode)，改写 \(patched) 个文件")
+            for l in lines.prefix(5) { log("    " + String(l)) }
+            if run.exitCode == 0 { return patched }
+            log("  （工具失败，回退到内置实现）")
+        }
+
+        // 回退：内置 Swift 实现（串行，带错误输出）
         let targets = machOs(under: root)
         var changed = 0
         var found = 0
@@ -474,11 +493,8 @@ enum NanoMuseTheosRuntime {
                 if errors.count < 3 { errors.append("\(relative(path, to: root)): \(error.localizedDescription)") }
             }
         }
-        log("  扫描 \(targets.count) 个 Mach-O，命中 \(found) 处，改写 \(changed) 处，跳过 \(skipped) 处")
-        if !errors.isEmpty {
-            log("  重定向错误（最多列 3 个）：")
-            for e in errors { log("    " + e) }
-        }
+        log("  内置扫描 \(targets.count) 个 Mach-O，命中 \(found)，改写 \(changed)，跳过 \(skipped)")
+        for e in errors { log("    " + e) }
         return changed
     }
 
@@ -499,7 +515,7 @@ enum NanoMuseTheosRuntime {
 
     // MARK: - 增量标记
 
-    static let markerVersion = 8
+    static let markerVersion = 9
     static let markerName = ".nanomuse-resign.json"
 
     struct Marker: Codable {

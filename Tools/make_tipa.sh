@@ -143,6 +143,23 @@ else
   echo "   (跳过：没有 tarx.c 或 xcrun)"
 fi
 
+echo "== 0a3/4 编译 machrepoint（依赖重定向） =="
+# 把 TheosRuntime 里对 @rpath/libiosexec.1.dylib 的依赖改成系统 libSystem：
+# 本机不允许 mmap 第三方 dylib，而 libiosexec 导出的就是 posix_spawn/execve/fopen。
+MR_SRC="$ROOT/Tools/forkless-sh/machrepoint.c"
+if [ -f "$MR_SRC" ] && command -v xcrun >/dev/null 2>&1; then
+  SDKMR="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
+  if [ -n "$SDKMR" ] && xcrun --sdk iphoneos clang -arch arm64 -miphoneos-version-min=15.0 \
+      -O2 -Wall -isysroot "$SDKMR" -o "$TARGET/Helpers/machrepoint" "$MR_SRC"; then
+    chmod 0755 "$TARGET/Helpers/machrepoint"
+    echo "   machrepoint 编译完成：$(du -h "$TARGET/Helpers/machrepoint" | cut -f1)"
+  else
+    echo "   warning: machrepoint 编译失败" >&2
+  fi
+else
+  echo "   (跳过：没有 machrepoint.c 或 xcrun)"
+fi
+
 echo "== 0b/4 编译 fork 对照实验（arm64 vs arm64e） =="
 # 同一份代码编两个架构：用来分辨「fork 被内核拒绝」还是「arm64e 的 PAC 让它崩」。
 FORKTEST_SRC="$ROOT/Tools/forkless-sh/forktest.c"
