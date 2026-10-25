@@ -652,8 +652,9 @@ public enum NanoMuseCodex {
             lines.append("  · exec 替换（P1 rc=0）与 posix_spawn（P6 rc=0）都通 → 创建进程的能力本身没坏；")
             lines.append("  · 纯 fork（P2）、fork+exec（P3）、后台 fork（P5）的子进程全部 Bus error 10"
                          + (substDead ? "，命令替换 $( ) 也静默返回空" : "") + "；")
-            lines.append("  · 根因：iOS SDK 把 fork() 标为 unavailable（编译器原文见上），")
-            lines.append("    宿主侧任何「复制自己再执行」的工具（codex shell / Theos / make）都不可能工作；")
+            lines.append("  · 根因：iOS SDK 把 fork() 标为 unavailable（编译器原文见上）；")
+            lines.append("    依赖 fork 的（make / Theos / 子 shell / 命令替换）确实不可用，")
+            lines.append("    但 codex 的 shell 已换成本包 nsh（posix_spawn），单命令 / 管道 / 重定向都能跑；")
             lines.append("  · 与签名段、entitlement、arm64e、jbroot 残留均无关，这是 iOS 的设计边界。")
             if simpleExec.0 == 0 {
                 lines.append("  · 但 P7「ls /」成功了 → bash 的**简单命令**走 posix_spawn，不需要 fork；")
@@ -989,12 +990,23 @@ public enum NanoMuseCodex {
 
     /// 设备上若残留越狱的 `/var/jb/bin/sh`，codex 的候选表会优先选它，
     /// 而它在 iOS 上不可执行（Bus error 10 / os error 85）。目录可写就把随包的
-    /// bash.real 顶上去；不可写就如实回报，交给 unified exec 那条路。
+    /// **nsh** 顶上去 —— 必须是 nsh 而不是 bash.real：
+    /// bash 只解决"能起来"，一执行外部命令仍然要 fork → SIGBUS；
+    /// nsh 用 posix_spawn 实现管道/重定向，才是真正能干活的那个。
     @discardableResult
     static func installHostShellShim() -> String {
+        let nsh = NanoMuseHelperRunner.path("nsh")
         let bash = NanoMuseHelperRunner.path("bash.real")
-        guard FileManager.default.isExecutableFile(atPath: bash) else {
-            return "bash.real 缺失（构建时没注入 Helpers）"
+        let source: String
+        let label: String
+        if FileManager.default.isExecutableFile(atPath: nsh) {
+            source = nsh
+            label = "nsh（forkless）"
+        } else if FileManager.default.isExecutableFile(atPath: bash) {
+            source = bash
+            label = "bash.real（注意：执行外部命令会 SIGBUS）"
+        } else {
+            return "nsh / bash.real 都缺失（构建时没注入 Helpers）"
         }
         var lines: [String] = []
         for dir in ["/var/jb/bin", "/var/jb/usr/bin"] {
@@ -1013,10 +1025,10 @@ public enum NanoMuseCodex {
                     if FileManager.default.fileExists(atPath: target) {
                         try FileManager.default.removeItem(atPath: target)
                     }
-                    try FileManager.default.copyItem(atPath: bash, toPath: target)
+                    try FileManager.default.copyItem(atPath: source, toPath: target)
                     try? FileManager.default.setAttributes([.posixPermissions: 0o755],
                                                            ofItemAtPath: target)
-                    lines.append("\(target)：已替换为 bash.real")
+                    lines.append("\(target)：已替换为 \(label)")
                 } catch {
                     lines.append("\(target)：复制失败 \(error.localizedDescription)")
                 }
