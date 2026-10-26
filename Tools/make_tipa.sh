@@ -201,6 +201,24 @@ fi
 cp "$RUNTIME_ENT" "$TARGET/entitlements.plist"
 echo "   entitlements.plist ← Tools/entitlements-runtime.plist（含 disable-library-validation + EVA）"
 
+echo "== 0c/4 宿主链接工具（ld64 / ldid / dpkg-deb / ar） =="
+RT_SRC="$ROOT/Tools/rt"
+if [ -d "$RT_SRC" ]; then
+  mkdir -p "$TARGET/Helpers/rt/bin" "$TARGET/Helpers/rt/lib"
+  cp "$RT_SRC"/bin/* "$TARGET/Helpers/rt/bin/"
+  cp "$RT_SRC"/lib/* "$TARGET/Helpers/rt/lib/"
+  chmod 0755 "$TARGET/Helpers/rt/bin"/*
+  chmod 0644 "$TARGET/Helpers/rt/lib"/*
+  # 这些程序用 @rpath/lib*.dylib 引用依赖，且 dyld 只允许 mmap 包内的可执行页；
+  # 补一条指向同目录 ../lib 的 rpath，让它们不依赖 DYLD_LIBRARY_PATH 也能起来。
+  for b in "$TARGET"/Helpers/rt/bin/*; do
+    install_name_tool -add_rpath @loader_path/../lib "$b" 2>/dev/null || true
+  done
+  echo "   Helpers/rt: $(find "$TARGET/Helpers/rt" -type f | wc -l | tr -d " ") 个文件，$(du -sh "$TARGET/Helpers/rt" | cut -f1)"
+else
+  echo "   (跳过：没有 Tools/rt)"
+fi
+
 echo "== 1/4 nested Mach-O: Helpers 保留原签名，其余 ad-hoc =="
 # Helpers 里的 bash.real / codex-sign / ca-filetool 是 MT-Agent 发布时已经签好的
 # （ldid + 完整巨魔权限，含 extended-virtual-addressing）。

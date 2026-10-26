@@ -800,13 +800,6 @@ public enum NanoMuseCodex {
 
         let current = await status()
 
-        // 宿主这条路依赖「创建进程」；有些设备 fork 本身就是坏的
-        // （连 `( exit 1 )` 都 SIGBUS），原生 codex 一定起不来。
-        // 更狠的是：iOS SDK 直接把 fork() 标成 unavailable（编译器原文
-        // "'fork()' is unavailable: Please use threads or posix_spawn*()"），
-        // 所以宿主 codex 的 shell 工具在任何 iOS 上都不成立。
-        // 因此只要 iSH 里的 codex 可用，就一律先走 iSH —— 它在 Linux 用户态里，
-        // 不需要宿主 fork。
         // Codex 只跑在宿主（iOS 原生）。它是本 App 的子进程，天然继承本 App 的
         // 文件权限，读整机数据不需要任何中间层；iSH 里的 Linux 版 codex 一律不用。
         if let native = nativeBinary() {
@@ -899,8 +892,16 @@ public enum NanoMuseCodex {
                     }
                 }
             }
+            // 宿主工具：Helpers/rt/bin 是必须随包的（ld64/ldid/dpkg-deb/ar 要加载
+            // 私有 dylib，dyld 只允许 mmap 包内路径）；runtimes/tools/bin 是纯
+            // libSystem 的（curl/git/jq/rg/cmake/ninja），放可写目录即可。
+            let rtRoot = NanoMuseHelperRunner.helpersDirectory + "/rt"
+            let hostToolsDir = NanoMuseNativeRuntime.rootDirectory.path + "/tools/bin"
+            if (env["DYLD_LIBRARY_PATH"] ?? "").isEmpty {
+                env["DYLD_LIBRARY_PATH"] = rtRoot + "/lib"
+            }
             env["PATH"] = (
-                [binDir.path, NanoMuseHelperRunner.helpersDirectory]
+                [binDir.path, hostToolsDir, rtRoot + "/bin", NanoMuseHelperRunner.helpersDirectory]
                 + runtimePath
                 + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
             ).joined(separator: ":")
