@@ -807,9 +807,9 @@ public enum NanoMuseCodex {
         // 所以宿主 codex 的 shell 工具在任何 iOS 上都不成立。
         // 因此只要 iSH 里的 codex 可用，就一律先走 iSH —— 它在 Linux 用户态里，
         // 不需要宿主 fork。
-        let alpineUsable = (current.alpinePath != nil) && current.alpineRuns
-        let preferAlpine = alpineUsable
-        if !preferAlpine, !alpineUsable, let native = nativeBinary() {
+        // Codex 只跑在宿主（iOS 原生）。它是本 App 的子进程，天然继承本 App 的
+        // 文件权限，读整机数据不需要任何中间层；iSH 里的 Linux 版 codex 一律不用。
+        if let native = nativeBinary() {
             // `exec` 默认是 read-only 沙箱（在 macOS 上走 seatbelt，iOS 没有这层，
             // 结果就是命令跑不动、写不了文件 → 看起来"能起但读不到系统数据"）。
             // 这个 App 本身就是边界（TrollStore 带 no-sandbox / platform-application），
