@@ -43,6 +43,16 @@ enum NanoMuseTheosRuntime {
         return list.filter { !$0.isEmpty }
     }
 
+    /// 运行时正式安装位置：优先写进 **自己的 .app 目录**（和 MT-Agent 一样），
+    /// 因为只有在 App 包里、被 TrollStore 签过名的二进制才能 mmap 自己的 dylib。
+    /// 写不进去时（不是 root）退回 <Library>/TheosRuntime。
+    static var installRoot: String {
+        let bundled = Bundle.main.bundlePath + "/TheosRuntime"
+        let fm = FileManager.default
+        if fm.isWritableFile(atPath: Bundle.main.bundlePath) { return bundled }
+        return NSHomeDirectory() + "/Library/TheosRuntime"
+    }
+
     /// 判定一个目录像不像 TheosRuntime：要有 usr/bin 或 bin，并且能找到 make/clang 之一
     static func looksLikeRuntime(_ path: String) -> Bool {
         let fm = FileManager.default
