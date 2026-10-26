@@ -64,6 +64,22 @@ def main(argv: list[str] | None = None) -> int:
         changed.append(f"CFBundleName → {BUNDLE_NAME}")
         data["CFBundleName"] = BUNDLE_NAME
 
+    # 顺手统一子标识：后台任务 id / 文档类型 / URL scheme 都带旧前缀，
+    # 两个 App 并存时会撞 BGTaskScheduler 标识。
+    def _rebrand(obj):
+        if isinstance(obj, str):
+            return obj.replace("io.github.nanomuse.app", BUNDLE_ID)
+        if isinstance(obj, list):
+            return [_rebrand(x) for x in obj]
+        if isinstance(obj, dict):
+            return {k: _rebrand(v) for k, v in obj.items()}
+        return obj
+
+    rebranded = _rebrand(data)
+    if rebranded != data:
+        changed.append("子标识（后台任务/文档类型/scheme）统一到新前缀")
+        data = rebranded
+
     doc_types = data.get("CFBundleDocumentTypes") or []
     if not isinstance(doc_types, list):
         doc_types = []

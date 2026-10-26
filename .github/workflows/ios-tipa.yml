@@ -97,6 +97,9 @@ jobs:
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
           python3 Tools/patch_upstream.py --root upstream/android/src/ios
           python3 Tools/patch_info_plist.py --plist upstream/android/src/ios/Info.plist
+          # Info.plist 会被 PRODUCT_BUNDLE_IDENTIFIER / INFOPLIST_KEY_* 覆盖，
+          # 必须同时改工程的构建设置，否则产物仍是 nanoMuse 身份。
+          python3 Tools/patch_identity.py --pbxproj upstream/android/src/ios/Minis.xcodeproj/project.pbxproj
           ls -l upstream/android/src/ios/NanoMuse/ | tail -4
 
       - name: Build (unsigned)
