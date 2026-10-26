@@ -9,12 +9,17 @@ enum NanoMuseAutoDiag {
 
     static var doneMark: URL { documentsURL().appendingPathComponent(".autodiag-done") }
 
-    @_cdecl("nm_run_autodiag")
-    public static func entry() {
+    static func runOnce() {
         Task.detached(priority: .utility) {
             guard !FileManager.default.fileExists(atPath: doneMark.path) else { return }
             NanoMusePersona.probeAndWrite()
             try? "done \(Date())".write(to: doneMark, atomically: true, encoding: .utf8)
         }
     }
+}
+
+/// C 侧（NanoMuseBootstrap.c）在启动 3 秒后调用
+@_cdecl("nm_run_autodiag")
+public func nm_run_autodiag() {
+    NanoMuseAutoDiag.runOnce()
 }
