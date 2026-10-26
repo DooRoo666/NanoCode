@@ -887,7 +887,6 @@ public enum NanoMuseCodex {
             }
             env["PATH"] = (
                 [binDir.path, hostToolsDir, rtRoot + "/bin", pyRoot, NanoMuseHelperRunner.helpersDirectory]
-                + runtimePath
                 + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
             ).joined(separator: ":")
             // 有些路径（PTY / 登录 shell）会直接读 $SHELL
