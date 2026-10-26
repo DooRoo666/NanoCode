@@ -9,11 +9,16 @@ enum NanoMuseAutoDiag {
 
     static var doneMark: URL { documentsURL().appendingPathComponent(".autodiag-done") }
 
+    /// 每次启动都跑一次（旧版用 doneMark 只跑一次，结果一旦写坏就再也看不到新数据）。
+    /// 日志超过 200KB 时先清空，避免无限增长。
     static func runOnce() {
         Task.detached(priority: .utility) {
-            guard !FileManager.default.fileExists(atPath: doneMark.path) else { return }
+            let file = documentsURL().appendingPathComponent("persona-diag.txt")
+            if let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? Int,
+               size > 200_000 {
+                try? FileManager.default.removeItem(at: file)
+            }
             NanoMusePersona.probeAndWrite()
-            try? "done \(Date())".write(to: doneMark, atomically: true, encoding: .utf8)
         }
     }
 }

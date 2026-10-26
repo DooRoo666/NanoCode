@@ -18,6 +18,12 @@ from pathlib import Path
 
 QUERY_SCHEMES = ["filza"]
 
+# 独立身份：不改这三项，装出来就是 nanoMuse 本身（bundle id 相同 → 直接覆盖宿主 App）。
+# 改成自己的 id / 名字后，两套 App 可以并存，互不覆盖、互不清数据。
+BUNDLE_ID = "io.github.nanomuse.nanocodex"
+DISPLAY_NAME = "NanoCodex"
+BUNDLE_NAME = "NanoCodex"
+
 DOC_TYPE = {
     "CFBundleTypeName": "nanoMuse Document",
     "CFBundleTypeRole": "Editor",
@@ -48,6 +54,16 @@ def main(argv: list[str] | None = None) -> int:
         data["LSApplicationQueriesSchemes"] = schemes + added
         changed.append(f"+LSApplicationQueriesSchemes {added}")
 
+    if data.get("CFBundleIdentifier") != BUNDLE_ID:
+        changed.append(f"CFBundleIdentifier {data.get('CFBundleIdentifier')} → {BUNDLE_ID}")
+        data["CFBundleIdentifier"] = BUNDLE_ID
+    if data.get("CFBundleDisplayName") != DISPLAY_NAME:
+        changed.append(f"CFBundleDisplayName → {DISPLAY_NAME}")
+        data["CFBundleDisplayName"] = DISPLAY_NAME
+    if data.get("CFBundleName") != BUNDLE_NAME:
+        changed.append(f"CFBundleName → {BUNDLE_NAME}")
+        data["CFBundleName"] = BUNDLE_NAME
+
     doc_types = data.get("CFBundleDocumentTypes") or []
     if not isinstance(doc_types, list):
         doc_types = []
@@ -70,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     path.write_bytes(plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=False))
 
     verify = plistlib.loads(path.read_bytes())
+    assert verify.get("CFBundleIdentifier") == BUNDLE_ID, "bundle id not applied"
+    assert verify.get("CFBundleDisplayName") == DISPLAY_NAME, "display name not applied"
     assert "filza" in (verify.get("LSApplicationQueriesSchemes") or []), "scheme missing after write"
     assert any(
         "public.data" in (item.get("LSItemContentTypes") or [])
