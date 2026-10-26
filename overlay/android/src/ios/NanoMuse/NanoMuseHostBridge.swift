@@ -179,7 +179,7 @@ enum NanoMuseHostBridge {
             return s.withCString { strdup($0) }
         }
 
-        var actions = posix_spawn_file_actions_t()
+        var actions: posix_spawn_file_actions_t? = nil
         posix_spawn_file_actions_init(&actions)
         posix_spawn_file_actions_adddup2(&actions, fds[1], 1)
         posix_spawn_file_actions_adddup2(&actions, fds[1], 2)
