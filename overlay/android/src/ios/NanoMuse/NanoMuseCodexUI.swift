@@ -160,6 +160,10 @@ struct NanoMuseCodexView: View {
                     append("运行时目录：\(NanoMuseTheosRuntime.installRoot)")
                     _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
                     for line in NanoMusePersonaProbe.report() { append(line) }
+                    append("--- persona root 探测（写 Documents/persona-diag.txt）---")
+                    NanoMusePersona.probeAndWrite()
+                    append(NanoMusePersona.tryInProcessSetuid())
+                    for line in NanoMusePersona.bundleWriteTest() { append(line) }
                 }
             }
             NanoMuseRowDivider()
