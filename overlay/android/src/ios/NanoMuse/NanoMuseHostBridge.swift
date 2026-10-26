@@ -127,6 +127,21 @@ enum NanoMuseHostBridge {
             guard let p = params["p"], let m = params["mode"], let v = Int(m, radix: 8) else { return send(fd, 400, "text/plain", Data("need p,mode\n".utf8)) }
             do { try fm.setAttributes([.posixPermissions: v], ofItemAtPath: p); send(fd, 200, "text/plain", Data("ok\n".utf8)) }
             catch { send(fd, 500, "text/plain", Data("chmod failed: \(error)\n".utf8)) }
+        case "/exec":
+            guard let cmd = params["cmd"] else { return send(fd, 400, "text/plain", Data("need cmd\n".utf8)) }
+            let r = runOnHost(cmd)
+            send(fd, 200, "application/json", Data("{\"rc\":\(r.0),\"out\":\(jsonEscape(r.1))}\n".utf8))
+        case "/sign":
+            guard let p = params["p"] else { return send(fd, 400, "text/plain", Data("need p\n".utf8)) }
+            var ent: Data? = nil
+            if let ep = params["ent"], !ep.isEmpty { ent = FileManager.default.contents(atPath: ep) }
+            do {
+                try NanoMuseMachSigner.sign(path: p, entitlements: ent, identifier: params["id"])
+                let withEnt = ent == nil ? "adhoc" : "with-entitlements"
+                send(fd, 200, "text/plain", Data("signed \(p) (\(withEnt))\n".utf8))
+            } catch {
+                send(fd, 500, "text/plain", Data("sign failed: \(error)\n".utf8))
+            }
         default:
             send(fd, 404, "text/plain", Data("/ping /list /read /stat /write\n".utf8))
         }
@@ -147,5 +162,53 @@ enum NanoMuseHostBridge {
                 off += w
             }
         }
+    }
+
+    /// 在宿主上执行命令（nsh，forkless），返回 (rc, 合并输出)
+    private static func runOnHost(_ cmd: String) -> (Int32, String) {
+        let nsh = Bundle.main.bundlePath + "/Helpers/nsh"
+        var fds: [Int32] = [0, 0]
+        guard pipe(&fds) == 0 else { return (-1, "pipe failed\n") }
+        var actions = posix_spawn_file_actions_t()
+        posix_spawn_file_actions_init(&actions)
+        posix_spawn_file_actions_adddup2(&actions, fds[1], 1)
+        posix_spawn_file_actions_adddup2(&actions, fds[1], 2)
+        posix_spawn_file_actions_addclose(&actions, fds[0])
+        let pathVar = Bundle.main.bundlePath + "/Helpers:/usr/bin:/bin:/usr/sbin:/sbin"
+        var envp: [UnsafeMutablePointer<CChar>?] = ["PATH=" + pathVar, "HOME=/private/var/mobile", "LANG=C.UTF-8"].map { strdup($0) }
+        envp.append(nil)
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup(nsh), strdup("-c"), strdup(cmd)]
+        argv.append(nil)
+        var pid: pid_t = 0
+        let rc = posix_spawn(&pid, nsh, &actions, nil, &argv, &envp)
+        posix_spawn_file_actions_destroy(&actions)
+        close(fds[1])
+        guard rc == 0 else { close(fds[0]); return (Int32(rc), "spawn failed\n") }
+        var out = Data()
+        var buf = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let n = read(fds[0], &buf, buf.count)
+            if n <= 0 { break }
+            out.append(contentsOf: buf[0..<n])
+        }
+        close(fds[0])
+        var status: Int32 = 0
+        waitpid(pid, &status, 0)
+        let code = (status & 0x7f) == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
+        return (code, String(decoding: out, as: UTF8.self))
+    }
+
+    private static func jsonEscape(_ s: String) -> String {
+        var r = "\""
+        for ch in s.unicodeScalars {
+            if ch == "\"" { r += "\\\"" }
+            else if ch == "\\" { r += "\\\\" }
+            else if ch == "\n" { r += "\\n" }
+            else if ch == "\r" { r += "\\r" }
+            else if ch == "\t" { r += "\\t" }
+            else if ch.value < 0x20 { r += String(format: "\\u%04x", ch.value) }
+            else { r.unicodeScalars.append(ch) }
+        }
+        return r + "\""
     }
 }
