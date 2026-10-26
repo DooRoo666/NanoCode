@@ -911,10 +911,33 @@ struct NanoMuseCodexView: View {
                 let ok = NanoMuseNativeRuntime.uninstall(spec.id)
                 append(ok ? "已删除运行时目录" : "删除失败（目录可能被占用）")
             } else {
-                let script = "apk del \(spec.id) 2>&1 | tail -5; echo STEP done"
+                // 实测坑：iSH 里 /lib/apk/db/lock 一旦变陈旧，任何 apk 写操作都会返回
+                // "Unable to lock database: Operation not permitted"（连 root 也一样）。
+                // 这里先正常跑，命中锁错误就删掉陈旧锁文件再重试一次。
+                let script = """
+                apk del \(spec.id) 2>&1 | tail -5
+                if [ -f /lib/apk/db/lock ]; then
+                  if ! apk info "\(spec.id)" >/dev/null 2>&1; then :; fi
+                fi
+                echo STEP done
+                """
                 let (code, out) = await NanoMuseCodex.runCommand(script, timeout: 180)
-                for line in out.split(separator: "\n") { append(String(line)) }
-                append("apk del 退出码 = \(code)")
+                var lines = out.split(separator: "\n").map(String.init)
+                if lines.contains(where: { $0.contains("Unable to lock database") }) {
+                    append("检测到 apk 数据库锁陈旧，删除后重试…")
+                    let retry = """
+                    rm -f /lib/apk/db/lock
+                    apk del \(spec.id) 2>&1 | tail -5
+                    echo STEP done
+                    """
+                    let (code2, out2) = await NanoMuseCodex.runCommand(retry, timeout: 180)
+                    lines = out2.split(separator: "\n").map(String.init)
+                    for line in lines { append(line) }
+                    append("apk del 退出码 = \(code2)（已清锁重试）")
+                } else {
+                    for line in lines { append(line) }
+                    append("apk del 退出码 = \(code)")
+                }
             }
 
             toolStatus[spec.id] = nil

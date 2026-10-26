@@ -163,12 +163,10 @@ enum NanoMuseTheosRuntime {
             let lower = path.lowercased()
             let isLibrary = lower.hasSuffix(".dylib") || lower.hasSuffix(".so")
                 || lower.contains(".framework/")
-            if isLibrary {
-                // 库不签：它们已经通过"依赖重定向"不再被加载
-                report.skipped += 1
-                marker.files[relative(path, to: root)] = fileStamp(path)
-                continue
-            }
+            // 结论修正（实测 codex CLI）：用 entitlements 签名后二进制就能跑，
+            // dylib 同理——不签名的库会在加载时被沙盒拦成 "sandbox blocked mmap"，
+            // 所以库也要签。
+            _ = isLibrary
             // 可执行文件用 codex-sign：实测它的签名能被 exec 接受（我们自研的 adhoc
             // 会被 AMFI 判 EBADARCH）。
             let run = await Task.detached(priority: .userInitiated) {
