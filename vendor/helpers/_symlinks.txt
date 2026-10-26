@@ -5,12 +5,6 @@ basename	ca-filetool
 du	ca-filetool
 xxd	ca-filetool
 sort	ca-filetool
-TheosCoreCompat/touch	../ca-filetool
-TheosCoreCompat/mkdir	../ca-filetool
-TheosCoreCompat/rm	../ca-filetool
-TheosCompat/mv	../ca-filetool
-TheosCompat/cp	../ca-filetool
-TheosCompat/tar	../ca-filetool
 sed	ca-filetool
 sysctl	ca-filetool
 uname	ca-filetool
@@ -31,6 +25,5 @@ dirname	ca-filetool
 find	ca-filetool
 ln	ca-filetool
 ls	ca-filetool
-theos-helper	ca-filetool
 chmod	ca-filetool
 which	ca-filetool
