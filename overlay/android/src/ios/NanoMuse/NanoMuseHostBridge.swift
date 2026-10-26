@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// 宿主文件桥：给 Linux 侧（iSH / Codex）一条读系统数据的路。
 ///
@@ -168,26 +169,42 @@ enum NanoMuseHostBridge {
     private static func runOnHost(_ cmd: String) -> (Int32, String) {
         let nsh = Bundle.main.bundlePath + "/Helpers/nsh"
         var fds: [Int32] = [0, 0]
-        guard pipe(&fds) == 0 else { return (-1, "pipe failed\n") }
+        let pipeRC: Int32 = fds.withUnsafeMutableBufferPointer { buf in
+            guard let base = buf.baseAddress else { return Int32(-1) }
+            return pipe(base)
+        }
+        guard pipeRC == 0 else { return (-1, "pipe failed\n") }
+
+        func cdup(_ s: String) -> UnsafeMutablePointer<CChar>? {
+            return s.withCString { strdup($0) }
+        }
+
         var actions = posix_spawn_file_actions_t()
         posix_spawn_file_actions_init(&actions)
         posix_spawn_file_actions_adddup2(&actions, fds[1], 1)
         posix_spawn_file_actions_adddup2(&actions, fds[1], 2)
         posix_spawn_file_actions_addclose(&actions, fds[0])
+
         let pathVar = Bundle.main.bundlePath + "/Helpers:/usr/bin:/bin:/usr/sbin:/sbin"
-        var envp: [UnsafeMutablePointer<CChar>?] = ["PATH=" + pathVar, "HOME=/private/var/mobile", "LANG=C.UTF-8"].map { strdup($0) }
-        envp.append(nil)
-        var argv: [UnsafeMutablePointer<CChar>?] = [strdup(nsh), strdup("-c"), strdup(cmd)]
-        argv.append(nil)
+        var envp: [UnsafeMutablePointer<CChar>?] = [
+            cdup("PATH=" + pathVar), cdup("HOME=/private/var/mobile"), cdup("LANG=C.UTF-8"), nil
+        ]
+        var argv: [UnsafeMutablePointer<CChar>?] = [cdup(nsh), cdup("-c"), cdup(cmd), nil]
+        defer {
+            for p in argv { if let p = p { free(p) } }
+            for p in envp { if let p = p { free(p) } }
+        }
+
         var pid: pid_t = 0
-        let rc = posix_spawn(&pid, nsh, &actions, nil, &argv, &envp)
+        let rc = posix_spawn(&pid, nsh, &actions, nil, argv, envp)
         posix_spawn_file_actions_destroy(&actions)
         close(fds[1])
         guard rc == 0 else { close(fds[0]); return (Int32(rc), "spawn failed\n") }
+
         var out = Data()
         var buf = [UInt8](repeating: 0, count: 8192)
         while true {
-            let n = read(fds[0], &buf, buf.count)
+            let n = buf.withUnsafeMutableBufferPointer { read(fds[0], $0.baseAddress, $0.count) }
             if n <= 0 { break }
             out.append(contentsOf: buf[0..<n])
         }
