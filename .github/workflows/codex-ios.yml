@@ -8,17 +8,20 @@ jobs:
     steps:
       - name: 取 Codex 源码
         run: git clone --depth 1 https://github.com/openai/codex.git src
-      - name: 安装 iOS target（跟随 rust-toolchain.toml）
-        working-directory: src
+      - name: 固定用 rustup 的 toolchain（runner 自带的 cargo 不是 rustup 管的）
         run: |
-          rustup show active-toolchain || true
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          which -a cargo rustc
           rustup target add aarch64-apple-ios
-          rustup target list --installed
+          rustup run stable cargo --version
+          rustup run stable rustc --print sysroot
+          ls "$(rustup run stable rustc --print sysroot)/lib/rustlib" | head
       - name: 编译
         working-directory: src/codex-rs
         run: |
           set -o pipefail
-          cargo build --release --target aarch64-apple-ios 2>&1 | tail -n 120
+          rustup run stable cargo build --release --target aarch64-apple-ios 2>&1 | tail -n 120
       - name: 上传产物
         if: always()
         uses: actions/upload-artifact@v4
