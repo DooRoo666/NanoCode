@@ -8,6 +8,16 @@ import UIKit
 /// 内容顺序：状态与安装 → 工具清单 → 安装回显 → 模型来源（两种）→ 凭据 → 模型列表 → 试跑。
 struct NanoMuseCodexView: View {
 
+    /// nil = 总览；否则渲染对应子页。用同一个 View 承载所有卡片，避免状态分裂。
+    var panel: CodexPanel? = nil
+
+    @State private var packagedSizes: [String: String] = [:]
+
+    init(panel: CodexPanel? = nil) {
+        self.panel = panel
+    }
+
+
     @State private var codexStatus: NanoMuseCodex.Status?
     @State private var toolStatus: [String: String] = [:]
     @State private var runningTool: String?
@@ -60,51 +70,247 @@ struct NanoMuseCodexView: View {
     }
 
     var body: some View {
-        NanoMusePage(title: "Codex") {
-            // ① 先配置：模型来源 → 凭据 → 模型
-            sourceCard
-            NanoMuseCaption(text: "「使用 nanoMuse 的模型服务」直接借用「设置 › 模型」里已配好的地址与密钥；「自己设置第三方」单独填一套，互不影响。")
-
-            if source == .custom {
-                customCredentialCard
+        NanoMusePage(title: panel?.title ?? "Codex") {
+            if let panel {
+                panelBody(panel)
+            } else {
+                overview
             }
-
-            modelCard
-            NanoMuseCaption(text: "模型列表来自该地址的 /v1/models；拉不到时自动用随包 models.json 兜底，也可以手动输入模型名。")
-
-            // ② 再安装：状态 → 回显 → 工具 → 原生工具 → 资源 → 更多
-            statusCard
-            NanoMuseCaption(text: "Codex 面板 \(NanoMuseCodex.buildTag) · 执行优先走 iSH（宿主 fork() 被 iOS 禁用，宿主 codex 的 shell 不可能工作）；状态只报实际装上的那条路线。")
-            logCard
-            NanoMuseCaption(text: "推荐在「运行时」里用原生方式安装 codex（原版 iphoneos-arm64 包，跑在 iOS 上）；这里的 Alpine 方式适合纯 Linux 工具。")
-
-            toolsCard
-            NanoMuseCaption(text: "每项可单独安装；已装的可点右侧垃圾桶删除。回显区会逐步打印命令、下载字节数、SHA256、版本信息。")
-
-            storageCard
-            NanoMuseCaption(text: "统计的是本 App 容器内的运行时、工具链、缓存与下载残留；不会动其他 App 的数据。")
-
-            signingCard
-            NanoMuseCaption(text: "codex-sign 给 Mach-O 产物签权限，ca-filetool 是多调用工具集（cat/ls/grep/tar），bash.real 是真正的 bash——三者都是 iOS 原生，不在 Alpine 里。")
-
-            assetsCard
-            NanoMuseCaption(text: "原版随包资源：Mermaid 本地渲染、cacert.pem 信任根、models.json 离线模型表、20.9 KB 兜底提示词、entitlements.plist 签名模板与第三方声明。")
-
-            advancedCard
-            extraCard
-
-            // ③ 试跑
-            runCard
-            if !output.isEmpty { outputCard }
         }
         .task {
             await refreshAll()
             await refreshStorage()
             refreshInherited()
+            await refreshPackagedSizes()
         }
         .sheet(isPresented: $showMermaid) {
             NanoMuseMermaidPreviewPage()
         }
+    }
+
+    // MARK: - 总览（分组）
+
+    @ViewBuilder
+    private var overview: some View {
+        groupHeader("核心能力")
+        NanoMuseCard {
+            capabilityRow(.codex)
+            NanoMuseRowDivider()
+            capabilityRow(.theos)
+            NanoMuseRowDivider()
+            capabilityRow(.models)
+        }
+        groupHeader("扩展工具")
+        NanoMuseCard {
+            capabilityRow(.packaged)
+            NanoMuseRowDivider()
+            capabilityRow(.tools)
+            NanoMuseRowDivider()
+            capabilityRow(.signing)
+        }
+        groupHeader("维护")
+        NanoMuseCard {
+            capabilityRow(.storage)
+            NanoMuseRowDivider()
+            capabilityRow(.diag)
+        }
+        Text("必须进包的工具已随 App 安装（288 个程序 / Python 3.13 / perl），其余在可写目录运行。")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+    }
+
+    private func groupHeader(_ text: String) -> some View {
+        Text(text)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 4)
+            .padding(.top, 6)
+    }
+
+    private func capabilityRow(_ item: CodexPanel) -> some View {
+        CodexCapabilityRow(icon: item.icon, tint: item.tint,
+                           title: item.title, detail: detailText(for: item),
+                           value: valueText(for: item)) {
+            NanoMuseCodexView(panel: item)
+        }
+    }
+
+    private func detailText(for item: CodexPanel) -> String {
+        switch item {
+        case .codex: return "原生二进制 · 宿主直跑"
+        case .theos: return toolStatus["theos"] ?? "TheosRuntime · 未检测"
+        case .models: return "来源 / 模型 / 密钥"
+        case .packaged: return "288 个程序 · Python 3.13 · perl 5.32"
+        case .tools: return "\(NanoMuseTools.catalog.count) 个可下载工具"
+        case .signing: return "codex-sign · 随包资源 · tipa"
+        case .storage: return "运行时与缓存占用"
+        case .diag: return "回显 · 进程阶梯 · 协议 · 打包"
+        }
+    }
+
+    private func valueText(for item: CodexPanel) -> String? {
+        switch item {
+        case .packaged: return packagedSizes["packaged"]
+        case .codex: return packagedSizes["codex"]
+        default: return nil
+        }
+    }
+
+    // MARK: - 子页
+
+    @ViewBuilder
+    private func panelBody(_ item: CodexPanel) -> some View {
+        switch item {
+        case .models:
+            sourceCard
+            if source == .custom { customCredentialCard }
+            modelCard
+        case .codex:
+            statusCard
+            logCard
+            advancedCard
+        case .theos:
+            theosCard
+            logCard
+        case .packaged:
+            packagedCard
+            logCard
+        case .tools:
+            toolsCard
+        case .storage:
+            storageCard
+        case .signing:
+            signingCard
+            assetsCard
+        case .diag:
+            extraCard
+            runCard
+            if !output.isEmpty { outputCard }
+            logCard
+        }
+    }
+
+    private var theosCard: some View {
+        NanoMuseCard {
+            NanoMuseActionRow(title: "下载 Theos 运行时（224MB，装进 .app）", chevron: false) {
+                logLines.removeAll()
+                append("===== 下载 TheosRuntime =====")
+                Task {
+                    do {
+                        let url = try await NanoMuseRuntimeInstaller.installNamed("theos") { line in
+                            append(line)
+                        }
+                        append("安装完成：\(url.path)")
+                    } catch {
+                        append("失败：\(error.localizedDescription)")
+                    }
+                    await refreshAll()
+                }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "下载核心工具（tar/sed/make/perl）", chevron: false) {
+                logLines.removeAll()
+                append("===== 下载 core_tools =====")
+                Task {
+                    do {
+                        let url = try await NanoMuseRuntimeInstaller.installNamed("core_tools") { line in
+                            append(line)
+                        }
+                        append("安装完成：\(url.path)")
+                    } catch {
+                        append("失败：\(error.localizedDescription)")
+                    }
+                    await refreshAll()
+                }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "准备 Theos 运行时（安装 → 重签 → 自检）", chevron: false) {
+                logLines.removeAll()
+                append("===== Theos 运行时 =====")
+                Task {
+                    _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
+                    await refreshAll()
+                }
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "重新检测", chevron: false) {
+                Task { await refreshAll() }
+            }
+        }
+    }
+
+    private var packagedCard: some View {
+        NanoMuseCard {
+            infoRow("随包程序", "\(packagedBinCount) 个")
+            NanoMuseRowDivider()
+            infoRow("链接 / 签名", "ld64 · ldid · ar · lipo · strip")
+            NanoMuseRowDivider()
+            infoRow("打包 / 压缩", "dpkg-deb · tar · xz · gzip")
+            NanoMuseRowDivider()
+            infoRow("Python", packagedSizes["python"] ?? "检测中…")
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "测试 python3 --version", chevron: false) {
+                testPackaged("py/python3", ["--version"])
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "测试 ld64", chevron: false) {
+                testPackaged("rt/bin/ld64", ["-v"])
+            }
+            NanoMuseRowDivider()
+            NanoMuseActionRow(title: "测试 perl -v", chevron: false) {
+                testPackaged("rt/bin/perl", ["-v"])
+            }
+        }
+    }
+
+    private func infoRow(_ title: String, _ value: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+            Spacer(minLength: 8)
+            Text(value).font(.footnote.monospaced()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+    }
+
+    private func testPackaged(_ relative: String, _ args: [String]) {
+        let path = NanoMuseHelperRunner.helpersDirectory + "/" + relative
+        append("$ " + relative + " " + args.joined(separator: " "))
+        Task {
+            let result = NanoMuseHelperRunner.run(path, arguments: args, timeout: 30)
+            append("exit=\(result.exitCode)")
+            for line in result.output.split(separator: "\n").prefix(6) { append(String(line)) }
+            await refreshPackagedSizes()
+        }
+    }
+
+    private var packagedBinCount: Int {
+        let path = NanoMuseHelperRunner.helpersDirectory + "/rt/bin"
+        return (try? FileManager.default.contentsOfDirectory(atPath: path).count) ?? 0
+    }
+
+    private func directorySize(_ path: String) -> Int64 {
+        let fm = FileManager.default
+        guard let e = fm.enumerator(atPath: path) else { return 0 }
+        var total: Int64 = 0
+        for case let item as String in e {
+            if let a = try? fm.attributesOfItem(atPath: path + "/" + item),
+               let n = a[.size] as? Int64 { total += n }
+        }
+        return total
+    }
+
+    private func refreshPackagedSizes() async {
+        let helpers = NanoMuseHelperRunner.helpersDirectory
+        let rt = directorySize(helpers + "/rt")
+        let py = directorySize(helpers + "/py")
+        var map: [String: String] = [:]
+        if rt + py > 0 { map["packaged"] = NanoMuseStorage.format(rt + py) }
+        if py > 0 { map["python"] = NanoMuseStorage.format(py) }
+        packagedSizes = map
     }
 
     // MARK: - 状态 / 进度
@@ -1062,7 +1268,7 @@ extension NanoMuseSettingsHomeView {
                     Spacer(minLength: 8)
                     Image(systemName: "chevron.right")
                         .font(.footnote.weight(.semibold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.secondary.opacity(0.6))
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
@@ -1070,5 +1276,95 @@ extension NanoMuseSettingsHomeView {
             }
             .buttonStyle(.plain)
         }
+    }
+}
+
+
+// MARK: - 分组枚举与总览行
+
+enum CodexPanel: String, CaseIterable, Identifiable {
+    case codex, theos, models, packaged, tools, signing, storage, diag
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .codex: return "Codex 运行环境"
+        case .theos: return "Theos 运行时"
+        case .models: return "模型与路由"
+        case .packaged: return "随包工具链"
+        case .tools: return "工具管理"
+        case .signing: return "签名与随包资源"
+        case .storage: return "存储"
+        case .diag: return "运行诊断"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .codex: return "terminal"
+        case .theos: return "hammer"
+        case .models: return "cpu"
+        case .packaged: return "shippingbox"
+        case .tools: return "wrench.and.screwdriver"
+        case .signing: return "signature"
+        case .storage: return "internaldrive"
+        case .diag: return "stethoscope"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .codex: return .blue
+        case .theos: return .indigo
+        case .models: return .purple
+        case .packaged: return .teal
+        case .tools: return .orange
+        case .signing: return .pink
+        case .storage: return .gray
+        case .diag: return .green
+        }
+    }
+}
+
+private struct CodexCapabilityRow<Destination: View>: View {
+    let icon: String
+    let tint: Color
+    let title: String
+    let detail: String
+    let value: String?
+    @ViewBuilder let destination: () -> Destination
+
+    var body: some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HStack(spacing: 13) {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(tint.gradient)
+                    .frame(width: 34, height: 34)
+                    .overlay(
+                        Image(systemName: icon)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                    )
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.body).foregroundStyle(.primary)
+                    Text(detail).font(.footnote).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 8)
+                if let value {
+                    Text(value).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

@@ -95,6 +95,14 @@ jobs:
           python3 Tools/apply_overlay.py \
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
+          # 新增的运行时下载/解包源文件也必须注册，否则不会被编译。
+          for extra in NanoMuseRuntimeInstaller.swift NanoMuseTarGz.swift; do
+            if [ -f "upstream/android/src/ios/NanoMuse/$extra" ]; then
+              python3 Tools/apply_overlay.py \
+                --project upstream/android/src/ios/Minis.xcodeproj \
+                --file "upstream/android/src/ios/NanoMuse/$extra" || true
+            fi
+          done
           python3 Tools/patch_upstream.py --root upstream/android/src/ios
           python3 Tools/patch_info_plist.py --plist upstream/android/src/ios/Info.plist
           # Info.plist 会被 PRODUCT_BUNDLE_IDENTIFIER / INFOPLIST_KEY_* 覆盖，

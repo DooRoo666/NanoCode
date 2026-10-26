@@ -44,8 +44,18 @@ enum NanoMuseNativeRuntime {
         let installedAt: Date
     }
 
-    /// `Library/Application Support/NanoCodex/runtimes`
+    /// 运行时根目录：**优先放在自己的 .app 里**（和 MT-Agent 一致）。
+    ///
+    /// 这是"下载了能用"的关键：iOS 只信任安装时被 TrollStore 签进 .app 的 Mach-O。
+    /// 放在 Library/ 里的二进制即使符号链接正确，dyld 也会拒绝加载它依赖的私有 dylib
+    /// （实测 clang 就死在这里，而 tar/sed/make/ld64/perl 因为只吃系统库才活着）。
+    /// 所以能写 .app 就写 .app，写不进才退回 Application Support。
     static var rootDirectory: URL {
+        let bundled = URL(fileURLWithPath: Bundle.main.bundlePath)
+            .appendingPathComponent("Runtimes", isDirectory: true)
+        if NanoMuseTheosRuntime.canWrite(bundled.path) {
+            return bundled
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let dir = base.appendingPathComponent("NanoCodex/runtimes", isDirectory: true)

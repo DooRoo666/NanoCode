@@ -201,20 +201,21 @@ fi
 cp "$RUNTIME_ENT" "$TARGET/entitlements.plist"
 echo "   entitlements.plist ← Tools/entitlements-runtime.plist（含 disable-library-validation + EVA）"
 
-echo "== 0c/4 宿主运行时（必须随包：链接器 / 用户态 / perl / python） =="
-mkdir -p "$TARGET/Helpers/rt" "$TARGET/Helpers/py"
-for part in rt-bin rt-lib; do
-  if [ -f "$ROOT/Tools/$part.tar.gz" ]; then
-    tar -xzf "$ROOT/Tools/$part.tar.gz" -C "$TARGET/Helpers/rt"
-  fi
-done
-if [ -f "$ROOT/Tools/py.tar.gz" ]; then
-  tar -xzf "$ROOT/Tools/py.tar.gz" -C "$TARGET/Helpers/py"
-fi
-chmod 0755 "$TARGET/Helpers/rt/bin"/* 2>/dev/null || true
-chmod 0755 "$TARGET/Helpers/py/python3" 2>/dev/null || true
-echo "   Helpers/rt: $(find "$TARGET/Helpers/rt" -type f | wc -l | tr -d " ") 个文件，$(du -sh "$TARGET/Helpers/rt" | cut -f1)"
-echo "   Helpers/py: $(find "$TARGET/Helpers/py" -type f | wc -l | tr -d " ") 个文件，$(du -sh "$TARGET/Helpers/py" | cut -f1)"
+echo "== 0c/4 运行时：不再随包，改为运行时下载（对齐 MT-Agent 的"自身小"） =="
+# 原来这里把 /usr/local/bin 的上百个工具（rt-bin 18MB）和它们依赖的 dylib
+# （rt-lib 33MB）以及 Python（py 11MB）全部塞进 Helpers/rt、Helpers/py，
+# 于是 tipa 一路涨到 115MB。
+#
+# MT Agent 只有 3.8MB：它把这些东西**运行时下载**、解压到自己的 .app 里
+# （实测 TheosRuntime/PythonRuntime 属主 mobile:501，就是从外部写进去的）。
+# 所以这里什么都不打进去，只保留一个空的运行时目录作为安装点。
+# 真正的下载/校验/解压逻辑在 NanoMuseRuntimeInstaller.swift。
+mkdir -p "$TARGET/Runtimes"
+echo "   Runtimes/ 留空，由 App 首启动下载"
+
+# 兼容旧版本：如果 Helpers/rt、Helpers/py 还在（历史产物），清掉避免 virtpath 混乱
+rm -rf "$TARGET/Helpers/rt" "$TARGET/Helpers/py" 2>/dev/null || true
+echo "   Helpers/rt、Helpers/py 已移除（改由 Runtimes/ 承载）"
 
 echo "== 1/4 nested Mach-O: Helpers 保留原签名，其余 ad-hoc =="
 # Helpers 里的 bash.real / codex-sign / ca-filetool 是 MT-Agent 发布时已经签好的

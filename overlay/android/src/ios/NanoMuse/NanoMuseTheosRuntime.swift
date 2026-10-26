@@ -43,14 +43,34 @@ enum NanoMuseTheosRuntime {
         return list.filter { !$0.isEmpty }
     }
 
-    /// 运行时正式安装位置：优先写进 **自己的 .app 目录**（和 MT-Agent 一样），
-    /// 因为只有在 App 包里、被 TrollStore 签过名的二进制才能 mmap 自己的 dylib。
-    /// 写不进去时（不是 root）退回 <Library>/TheosRuntime。
+    /// 运行时正式安装位置：优先写进 **自己的 .app 目录**（和 MT-Agent 一样）。
+    ///
+    /// 判定不能用 `isWritableFile(.app)`：.app 根永远是 root:root 0755，结果恒为 false，
+    /// 于是 runtime 永远落到 Library/ —— 这正是"下载了却跑不起来"的根源。
+    /// 正确做法是**实探**：在候选目录里真的建一个子目录再删掉，
+    /// 能建成才算可写。MT 包内 TheosRuntime 属主是 mobile(501:501)，
+    /// 它就是这么写进去的。
     static var installRoot: String {
         let bundled = Bundle.main.bundlePath + "/TheosRuntime"
-        let fm = FileManager.default
-        if fm.isWritableFile(atPath: Bundle.main.bundlePath) { return bundled }
+        if canWrite(bundled) { return bundled }
+        // 退化：Documents 也在 .app 之外但可写，且 Files App 可见，便于排查。
         return NSHomeDirectory() + "/Library/TheosRuntime"
+    }
+
+    /// 真正探测"这个目录能不能建文件"。
+    /// 注意沙盒在某些路径上对 write 返回成功但静默丢弃，
+    /// 所以必须回读确认文件真的存在。
+    static func canWrite(_ dir: String) -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let probe = dir + "/.write-probe-\(UUID().uuidString.prefix(8))"
+        let ok = fm.createFile(atPath: probe, contents: Data("x".utf8))
+        if ok, fm.fileExists(atPath: probe) {
+            try? fm.removeItem(atPath: probe)
+            return true
+        }
+        try? fm.removeItem(atPath: probe)
+        return false
     }
 
     /// 判定一个目录像不像 TheosRuntime：要有 usr/bin 或 bin，并且能找到 make/clang 之一
