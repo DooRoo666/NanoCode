@@ -90,6 +90,28 @@ else
   echo "   (跳过：没有 vendor/helpers)"
 fi
 
+echo "== 0b/4 宿主运行时（链接/签名/打包） =="
+# 为什么必须在包里：iOS 只允许从 .app 内 mmap 可执行 dylib。
+# 放在 Documents / Library 里，dyld 会报 "file system sandbox blocked mmap()"，
+# 于是 ld64 加载不了 libxar、ldid 加载不了 libiosexec，链接和签名都做不成。
+# 编译用的 clang 是静态单文件，可以留在可写目录，不必进包。
+HOSTRT_SRC="$ROOT/Tools/hostrt"
+if [ -d "$HOSTRT_SRC" ]; then
+  mkdir -p "$TARGET/Helpers/rt"
+  cp -R "$HOSTRT_SRC/." "$TARGET/Helpers/rt/"
+  find "$TARGET/Helpers/rt/bin" -type f -exec chmod 0755 {} \; 2>/dev/null
+  find "$TARGET/Helpers/rt/lib" -type f -exec chmod 0644 {} \; 2>/dev/null
+  # 原始文件带着第三方注入的坏签名（libxar 里有 com.icraze.gtatracker），必须重签
+  find "$TARGET/Helpers/rt" -type f -print0 | while IFS= read -r -d '' f; do
+    if is_macho "$f"; then
+      codesign -f -s - "$f" >/dev/null 2>&1 || echo "   warn: sign failed $f"
+    fi
+  done
+  echo "   hostrt: $(find "$TARGET/Helpers/rt" -type f | wc -l | tr -d ' ') files"
+else
+  echo "   (跳过：没有 Tools/hostrt)"
+fi
+
 echo "== 0a/4 编译 forkless shell（nsh） =="
 # bash.real 执行任何外部命令、管道、重定向都要 fork，而 iOS 从 SDK 层禁了 fork，
 # 结果就是 codex 的 shell 一调命令就 SIGBUS(10)。
