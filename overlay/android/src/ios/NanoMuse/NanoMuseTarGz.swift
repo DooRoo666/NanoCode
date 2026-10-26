@@ -106,7 +106,8 @@ enum NanoMuseTarGz {
     @discardableResult
     static func unpack(archive: URL, into dir: URL) throws -> Int {
         let raw = try Data(contentsOf: archive)
-        let tar = try gunzip(raw)
+        // 转成零基数组：tar 切片全部基于 0 起算，避免 Data 的 startIndex 干扰
+        let tar = [UInt8](try gunzip(raw))
         let fm = FileManager.default
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
 
@@ -116,7 +117,7 @@ enum NanoMuseTarGz {
         var pendingLongName: String?
 
         while pos + chunk <= tar.count {
-            let header = tar[tar.startIndex + pos ..< tar.startIndex + pos + chunk]
+            let header = tar[pos..<(pos + chunk)]
             // 全零块 = 结束
             if header.allSatisfy({ $0 == 0 }) { break }
 
@@ -136,7 +137,7 @@ enum NanoMuseTarGz {
             // GNU 长文件名
             if type == 0x4c {
                 if dataLen <= tar.count - pos {
-                    pendingLongName = str(tar[tar.startIndex + pos ..< tar.startIndex + pos + dataLen])
+                    pendingLongName = str(tar[pos..<(pos + dataLen)])
                 }
                 pos += padded
                 continue
@@ -150,7 +151,7 @@ enum NanoMuseTarGz {
             guard dataLen <= tar.count - pos else {
                 throw TarError.badHeader("条目 \(name) 长度越界")
             }
-            let body = tar.subdata(in: (tar.startIndex + pos)..<(tar.startIndex + pos + dataLen))
+            let body = Data(tar[pos..<(pos + dataLen)])
             pos += padded
 
             let target = base.appendingPathComponent(name).standardizedFileURL
