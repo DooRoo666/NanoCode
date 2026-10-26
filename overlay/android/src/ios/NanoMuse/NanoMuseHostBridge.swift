@@ -111,6 +111,22 @@ enum NanoMuseHostBridge {
             } catch {
                 send(fd, 500, "text/plain", Data("write failed: \(error)\n".utf8))
             }
+        case "/mkdir":
+            guard let p = params["p"] else { return send(fd, 400, "text/plain", Data("need p\n".utf8)) }
+            do { try fm.createDirectory(atPath: p, withIntermediateDirectories: true); send(fd, 200, "text/plain", Data("ok\n".utf8)) }
+            catch { send(fd, 500, "text/plain", Data("mkdir failed: \(error)\n".utf8)) }
+        case "/rm":
+            guard let p = params["p"] else { return send(fd, 400, "text/plain", Data("need p\n".utf8)) }
+            do { try fm.removeItem(atPath: p); send(fd, 200, "text/plain", Data("ok\n".utf8)) }
+            catch { send(fd, 500, "text/plain", Data("rm failed: \(error)\n".utf8)) }
+        case "/mv":
+            guard let a = params["from"], let b = params["to"] else { return send(fd, 400, "text/plain", Data("need from,to\n".utf8)) }
+            do { try fm.moveItem(atPath: a, toPath: b); send(fd, 200, "text/plain", Data("ok\n".utf8)) }
+            catch { send(fd, 500, "text/plain", Data("mv failed: \(error)\n".utf8)) }
+        case "/chmod":
+            guard let p = params["p"], let m = params["mode"], let v = Int(m, radix: 8) else { return send(fd, 400, "text/plain", Data("need p,mode\n".utf8)) }
+            do { try fm.setAttributes([.posixPermissions: v], ofItemAtPath: p); send(fd, 200, "text/plain", Data("ok\n".utf8)) }
+            catch { send(fd, 500, "text/plain", Data("chmod failed: \(error)\n".utf8)) }
         default:
             send(fd, 404, "text/plain", Data("/ping /list /read /stat /write\n".utf8))
         }
