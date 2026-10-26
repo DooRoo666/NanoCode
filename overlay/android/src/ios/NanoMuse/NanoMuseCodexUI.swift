@@ -151,6 +151,17 @@ struct NanoMuseCodexView: View {
     /// 高级维护：只保留真正会用到的几项
     private var advancedCard: some View {
         NanoMuseCard {
+            NanoMuseActionRow(title: "persona 探测（不下载）", chevron: true) {
+                guard !busy, !nativeRunning else { return }
+                logLines.removeAll()
+                append("===== persona 探测 =====")
+                for line in NanoMusePersonaProbe.report() { append(line) }
+                NanoMusePersona.probeAndWrite()
+                append(NanoMusePersona.tryInProcessSetuid())
+                for line in NanoMusePersona.bundleWriteTest() { append(line) }
+                append("结果已写入 Documents/persona-diag.txt")
+            }
+            NanoMuseRowDivider()
             NanoMuseActionRow(title: "Theos 工具链", chevron: true) {
                 guard !busy, !nativeRunning else { return }
                 logLines.removeAll()

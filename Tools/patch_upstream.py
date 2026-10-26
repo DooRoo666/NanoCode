@@ -303,6 +303,33 @@ def patch_providers_json(root: pathlib.Path, check_only: bool) -> int:
     return 0
 
 
+def patch_launch_hook(root: pathlib.Path, check_only: bool) -> int:
+    """App 冷启动时自动跑一次 persona 自检（结果写 Documents/persona-diag.txt）。
+
+    锚点选 @main 结构里的 processLaunchedAt 静态量：App.init() 会读它，
+    所以初始化必然发生在启动阶段，不需要任何 UI 交互。
+    """
+    rel = "MinisApp.swift"
+    anchor = "    static let processLaunchedAt = Date()"
+    marker = "NanoMuseAutoDiag.runOnce()"
+    insert = "    static let processLaunchedAt: Date = { NanoMuseAutoDiag.runOnce(); return Date() }()"
+    path = root / rel
+    if not path.exists():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 2
+    text = path.read_text(encoding="utf-8")
+    if marker in text:
+        print("  launch hook: already wired")
+        return 0
+    if text.count(anchor) != 1:
+        print(f"error: launch hook anchor found {text.count(anchor)} times", file=sys.stderr)
+        return 3
+    print("  launch hook: wired")
+    if not check_only:
+        path.write_text(text.replace(anchor, insert, 1), encoding="utf-8")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True, help="android/src/ios in the upstream checkout")
@@ -332,7 +359,10 @@ def main(argv: list[str] | None = None) -> int:
         rc = patch_providers_json(pathlib.Path(args.root), check_only=True)
         if rc:
             return rc
-        return patch_codex(pathlib.Path(args.root), check_only=True)
+        rc = patch_codex(pathlib.Path(args.root), check_only=True)
+        if rc:
+            return rc
+        return patch_launch_hook(pathlib.Path(args.root), check_only=True)
 
     if text != original:
         path.write_text(text, encoding="utf-8")
@@ -341,7 +371,10 @@ def main(argv: list[str] | None = None) -> int:
     rc = patch_providers_json(pathlib.Path(args.root), check_only=False)
     if rc:
         return rc
-    return patch_codex(pathlib.Path(args.root), check_only=False)
+    rc = patch_codex(pathlib.Path(args.root), check_only=False)
+    if rc:
+        return rc
+    return patch_launch_hook(pathlib.Path(args.root), check_only=False)
 
 
 if __name__ == "__main__":
