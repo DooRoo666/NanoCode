@@ -66,6 +66,9 @@ enum NanoMuseTheosRuntime {
         return false
     }
 
+    /// 兼容旧调用名：返回所有候选根目录
+    static func searchRoots() -> [String] { ownRoots() }
+
     static func locate() -> String? {
         for root in searchRoots() where looksLikeRuntime(root) {
             return root
