@@ -33,11 +33,6 @@ enum NanoMuseTheosRuntime {
     /// 写进去也等于改别人的文件。这里只认自己沙盒内的副本。
     static func ownRoots() -> [String] {
         var list: [String] = []
-        // ① 越狱环境优先：/var/jb 里的 Procursus 工具链本来就齐（clang/make/ldid/dpkg-deb），
-        //    越狱后 dyldhook 生效，这些二进制能直接跑，不需要我们那张表。
-        if isJailbroken {
-            list.append("/var/jb")                 // PATH 里会拼 /usr/bin
-        }
         // ② App 包内（若将来把 runtime 直接打进 tipa）
         list.append(Bundle.main.bundlePath + "/TheosRuntime")
         list.append(Bundle.main.resourcePath.map { $0 + "/TheosRuntime" } ?? "")
@@ -47,27 +42,6 @@ enum NanoMuseTheosRuntime {
         list.append(installRoot)
         return list.filter { !$0.isEmpty }
     }
-
-    /// 越狱是否生效：`/var/jb` 存在 **并且** 里面的 ldid 能跑。
-    /// 只看目录存在不够——留了残留目录但没激活越狱时，二进制会报 Bad executable。
-    static var isJailbroken: Bool {
-        cachedJailbroken
-    }
-
-    private static let cachedJailbroken: Bool = {
-        let fm = FileManager.default
-        let ldid = "/var/jb/usr/bin/ldid"
-        guard fm.fileExists(atPath: ldid), fm.isExecutableFile(atPath: ldid) else { return false }
-        // 真正 spawn 一次：越狱没激活时它会立刻失败
-        let r = NanoMuseHelperRunner.run(ldid, arguments: ["-h"], timeout: 20)
-        return r.exitCode == 0
-    }()
-
-    /// 自己的安装根目录：`<Library>/TheosRuntime`
-    static var installRoot: String { NSHomeDirectory() + "/Library/TheosRuntime" }
-
-    /// 兼容旧调用名
-    static func searchRoots() -> [String] { ownRoots() }
 
     /// 判定一个目录像不像 TheosRuntime：要有 usr/bin 或 bin，并且能找到 make/clang 之一
     static func looksLikeRuntime(_ path: String) -> Bool {

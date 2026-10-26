@@ -12,6 +12,8 @@
 	<key>com.apple.private.background-task.allowed</key><true/>
 	<key>com.apple.private.persona-mgmt</key><true/>
 	<key>platform-application</key><true/>
+	<!-- MT-Agent 有这条：允许 task_for_pid / 调试，也是 persona 相关私有 API 的前置 -->
+	<key>get-task-allow</key><true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.io.github.nanomuse.app</string>

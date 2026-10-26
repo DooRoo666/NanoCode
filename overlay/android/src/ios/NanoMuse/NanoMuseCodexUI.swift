@@ -157,14 +157,9 @@ struct NanoMuseCodexView: View {
                 nativeLog.clear()
                 append("===== Theos 工具链 =====")
                 Task {
-                    if NanoMuseTheosRuntime.isJailbroken {
-                        append("已越狱：使用 /var/jb 的系统工具链")
-                        append(NanoMuseTheosRuntime.environment(for: "/var/jb")["PATH"] ?? "")
-                        for line in await NanoMuseTheosRuntime.smokeTest(root: "/var/jb") { append(line) }
-                    } else {
-                        append("未越狱：使用自带运行时（\(NanoMuseTheosRuntime.installRoot)）")
-                        _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
-                    }
+                    append("运行时目录：\(NanoMuseTheosRuntime.installRoot)")
+                    _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
+                    for line in NanoMusePersonaProbe.report() { append(line) }
                 }
             }
             NanoMuseRowDivider()
