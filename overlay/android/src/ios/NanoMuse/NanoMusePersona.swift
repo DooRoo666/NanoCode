@@ -1,165 +1,290 @@
 import Darwin
 import Foundation
 
-/// 照 MT-Agent 的做法拿「root persona」：进程在 root 的 persona 里派生子进程，
-/// 子进程 effective uid = 0，从而能写进自己的 .app 目录、也能 mmap 已签名文件。
+/// 只干一件事：验证「能不能用 root persona 拉起子进程」，
+/// 因为只有这条路能让 App 写进自己的 .app、往 /var/jb 装 deb。
 ///
-/// 用到的都是 libsystem_kernel 的私有符号，只能 dlsym：
-///   kpersona_find / kpersona_palloc / kpersona_dealloc
-///   posix_spawnattr_set_persona_np
-/// 权限来自 entitlements 里的 com.apple.private.persona-mgmt。
+/// 上一版的两个坑（都被日志坐实了）：
+/// 1. `kpersona_find` 用了 iOS 13 的两参签名，iOS 17 是五参
+///    (name, type, uid, &id, &idlen)，所以 rc 恒为 -1；
+/// 2. 拿 bash.real 去执行外部工具（mkdir 之类），子进程直接 SIGBUS，
+///    于是"写包失败"其实是测试本身坏了，不是权限问题。
+/// 这版改成：所有动作都用 bash 内建重定向完成，不再 exec 第二层。
 public enum NanoMusePersona {
 
-    private typealias FindFn   = @convention(c) (UnsafePointer<CChar>?, UnsafeMutablePointer<Int32>?) -> Int32
-    private typealias PallocFn = @convention(c) (Int32, UnsafeMutablePointer<Int32>?) -> Int32
-    private typealias DeallocFn = @convention(c) (Int32) -> Int32
-    private typealias SetPersonaFn = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>?, Int32, UInt32) -> Int32
+    // MARK: - 符号
 
-    /// POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE
-    public static let overrideFlag: UInt32 = 1
+    private typealias FindFn = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, uid_t,
+                                               UnsafeMutablePointer<UInt64>?, UnsafeMutablePointer<Int>?) -> Int32
+    private typealias GetFn = @convention(c) (UnsafeMutablePointer<UInt64>?) -> Int32
+    private typealias SetPersonaFn = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>?, UInt64, UInt32) -> Int32
 
-    private static func sym<T>(_ name: String, _ type: T.Type) -> T? {
-        guard let h = dlopen(nil, RTLD_NOW), let p = dlsym(h, name) else { return nil }
-        return unsafeBitCast(p, to: T.self)
+    private static let find: FindFn? = lookup("kpersona_find")
+    private static let get: GetFn? = lookup("kpersona_get")
+    private static let setPersona: SetPersonaFn? = lookup("posix_spawnattr_set_persona_np")
+
+    private static func lookup<T>(_ name: String) -> T? {
+        guard let handle = dlopen(nil, RTLD_NOW), let address = dlsym(handle, name) else { return nil }
+        return unsafeBitCast(address, to: T.self)
     }
 
-    public static var hasPersonaSymbols: Bool {
-        sym("kpersona_find", FindFn.self) != nil
-            && sym("posix_spawnattr_set_persona_np", SetPersonaFn.self) != nil
+    /// 候选调用形态：带不带 type、uid 用 0 还是 -1。三种都试，全打 errno。
+    private static var variants: [(String?, uid_t)] {
+        [(nil, 0), ("PERSONA_ID", 0), (nil, uid_t.max)]
     }
 
-    /// 找 "root" persona 的 id
+    // MARK: - 查询
+
+    public static func ownPersonaID() -> (id: UInt64?, rc: Int32) {
+        guard let fn = get else { return (nil, -999) }
+        var value: UInt64 = 0
+        let rc = fn(&value)
+        return (rc == 0 && value != 0 ? value : nil, rc)
+    }
+
+    public static func rootPersonaID64() -> (id: UInt64?, rc: Int32) {
+        guard let fn = find else { return (nil, -999) }
+        var last: Int32 = -1
+        for variant in variants {
+            var value: UInt64 = 0
+            var length = MemoryLayout<UInt64>.size
+            var rc: Int32 = -1
+            if let type = variant.0 {
+                type.withCString { pointer in
+                    rc = fn("root", pointer, variant.1, &value, &length)
+                }
+            } else {
+                rc = fn("root", nil, variant.1, &value, &length)
+            }
+            if rc == 0 && value != 0 { return (value, rc) }
+            last = rc
+        }
+        return (nil, last)
+    }
+
     public static func rootPersonaID() -> (id: Int32?, rc: Int32) {
-        guard let find = sym("kpersona_find", FindFn.self) else { return (nil, -999) }
-        var id: Int32 = -1
-        let rc = "root".withCString { find($0, &id) }
-        return (rc == 0 && id >= 0 ? id : nil, rc)
+        let (value, rc) = rootPersonaID64()
+        guard let raw = value, raw <= UInt64(Int32.max) else { return (nil, rc) }
+        return (Int32(raw), rc)
     }
 
-    /// 给 spawnattr 设 persona
-    public static func setPersona(_ attr: inout posix_spawnattr_t?, id: Int32, flags: UInt32) -> Int32 {
-        guard let fn = sym("posix_spawnattr_set_persona_np", SetPersonaFn.self) else { return -999 }
-        return fn(&attr, id, flags)
-    }
-}
-
-extension NanoMusePersona {
-
-    private static func documentsURL() -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    }
-
-    private static func log(_ lines: [String]) {
-        let text = lines.joined(separator: "\n") + "\n"
-        let url = documentsURL().appendingPathComponent("persona-diag.txt")
-        if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile()
-            if let d = text.data(using: .utf8) { h.write(d) }
-            try? h.close()
-        } else {
-            try? text.write(to: url, atomically: true, encoding: .utf8)
+    public static func findVariantReport() -> [String] {
+        guard let fn = find else { return ["kpersona_find: 符号不存在"] }
+        var lines: [String] = []
+        for (index, variant) in variants.enumerated() {
+            var value: UInt64 = 0
+            var length = MemoryLayout<UInt64>.size
+            var rc: Int32 = -1
+            if let type = variant.0 {
+                type.withCString { pointer in
+                    rc = fn("root", pointer, variant.1, &value, &length)
+                }
+            } else {
+                rc = fn("root", nil, variant.1, &value, &length)
+            }
+            let code = errno
+            lines.append("find#\(index) type=\(variant.0 ?? "nil") uid=\(variant.1) → rc=\(rc) errno=\(code) id=\(rc == 0 ? String(value) : "-")")
         }
+        return lines
     }
 
-    /// 用一个子进程验证 root persona 是否真的生效：
-    /// bash 的 $UID 是 readonly 的 real uid，能反映子进程身份。
-    public static func probeAndWrite() {
-        var out: [String] = []
-        out.append("===== persona 探测 \(Date()) =====")
-        out.append("bundle=\(Bundle.main.bundlePath)")
-        out.append("自身 uid=\(getuid()) euid=\(geteuid())")
-        out.append("persona 符号: \(hasPersonaSymbols ? "有" : "无")")
+    // MARK: - 子进程
 
-        let (rid, rrc) = rootPersonaID()
-        out.append("kpersona_find(root) rc=\(rrc) id=\(rid.map(String.init) ?? "-")")
-
-        if !hasPersonaSymbols {
-            let rc = setuid(0)
-            out.append("setuid(0) rc=\(rc) 之后 uid=\(getuid())")
-            log(out)
-            return
-        }
-
-        if let r = runUidProbe(personaID: nil) {
-            out.append("基线 spawn: rc=\(r.rc) uid=\(r.output.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-        if let pid = rid, let r = runUidProbe(personaID: pid) {
-            out.append("root persona spawn: rc=\(r.rc) uid=\(r.output.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-        out.append(contentsOf: bundleWriteTest())
-        log(out)
+    public struct RunResult {
+        public let rc: Int32
+        public let output: String
     }
 
-    public static func tryInProcessSetuid() -> String {
-        let rc = setuid(0)
-        return "setuid(0) rc=\(rc) uid=\(getuid()) euid=\(geteuid())"
+    public static func helper(_ name: String) -> String? {
+        let path = Bundle.main.bundlePath + "/Helpers/" + name
+        return FileManager.default.isExecutableFile(atPath: path) ? path : nil
     }
 
-    public static func runUidProbe(personaID: Int32?) -> (rc: Int32, output: String)? {
-        guard let bash = bundledHelper("bash.real") else { return nil }
-        return spawn(bash, args: ["bash.real", "-c", "echo $UID"], personaID: personaID)
-    }
+    /// 用 posix_spawn 起子进程；personaID 非空时走 POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE。
+    /// stdout/stderr 一律落临时文件后再读，避免管道读空的坑。
+    public static func spawn(_ path: String, args: [String], personaID: UInt64?, timeout: TimeInterval = 12) -> RunResult? {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("nm-spawn-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: temp.path, contents: nil)
+        guard let handle = FileHandle(forWritingAtPath: temp.path) else { return nil }
+        defer { try? FileManager.default.removeItem(at: temp) }
 
-    /// 用 root persona 往 bundle 里建目录 + 写文件，验证「写进自己包内」可行性
-    public static func bundleWriteTest() -> [String] {
-        var out: [String] = []
-        let dir = Bundle.main.bundlePath + "/.nmwrite"
-        let (rid, _) = rootPersonaID()
-        guard let bash = bundledHelper("bash.real") else {
-            out.append("写包测试: 找不到 bash.real")
-            return out
-        }
-        let script = "mkdir -p '\(dir)' && echo hello > '\(dir)/t.txt' && ls -ld '\(dir)'"
-        let r1 = spawn(bash, args: ["bash.real", "-c", script], personaID: nil)
-        out.append("写包(基线 mobile): rc=\(r1?.rc ?? -1) \(r1?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")")
-        if let pid = rid {
-            let r2 = spawn(bash, args: ["bash.real", "-c", script], personaID: pid)
-            out.append("写包(root persona): rc=\(r2?.rc ?? -1) \(r2?.output.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")")
-        }
-        return out
-    }
-
-    public static func bundledHelper(_ name: String) -> String? {
-        let p = Bundle.main.bundlePath + "/Helpers/" + name
-        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
-    }
-
-    /// forkless posix_spawn，可选 persona
-    public static func spawn(_ path: String, args: [String], personaID: Int32?) -> (rc: Int32, output: String)? {
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_adddup2(&actions, handle.fileDescriptor, STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&actions, handle.fileDescriptor, STDERR_FILENO)
+
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
+        defer { posix_spawnattr_destroy(&attr) }
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
 
-        let outURL = documentsURL().appendingPathComponent("spawn-\(UUID().uuidString).txt")
-        FileManager.default.createFile(atPath: outURL.path, contents: nil)
-        let fd = open(outURL.path, O_WRONLY | O_TRUNC)
-        if fd >= 0 { posix_spawn_file_actions_adddup2(&actions, fd, 1) }
-
-        if let pid = personaID {
-            let rc = setPersona(&attr, id: pid, flags: overrideFlag)
+        if let pid = personaID, let setter = setPersona {
+            let rc = setter(&attr, pid, 1) // POSIX_SPAWN_PERSONA_FLAGS_OVERRIDE
             if rc != 0 {
-                if fd >= 0 { close(fd) }
-                posix_spawnattr_destroy(&attr)
-                posix_spawn_file_actions_destroy(&actions)
-                return (rc, "set_persona_np rc=\(rc)")
+                return RunResult(rc: rc, output: "set_persona_np rc=\(rc) errno=\(errno)")
             }
         }
 
-        var argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
+        var argv = args.map { strdup($0) }
         argv.append(nil)
-        var pid: pid_t = 0
-        let rc = posix_spawn(&pid, path, &actions, &attr, argv, environ)
-        for a in argv { free(a) }
-        if fd >= 0 { close(fd) }
-        posix_spawnattr_destroy(&attr)
-        posix_spawn_file_actions_destroy(&actions)
+        var childPID: pid_t = 0
+        let spawnRC: Int32 = argv.withUnsafeMutableBufferPointer { buffer in
+            posix_spawn(&childPID, path, &actions, &attr, buffer.baseAddress, environ)
+        }
+        argv.forEach { free($0) }
+        guard spawnRC == 0 else {
+            return RunResult(rc: spawnRC, output: "posix_spawn errno=\(spawnRC)")
+        }
 
-        let text = (try? String(contentsOf: outURL, encoding: .utf8)) ?? ""
-        try? FileManager.default.removeItem(at: outURL)
-        if rc != 0 { return (rc, text) }
         var status: Int32 = 0
-        waitpid(pid, &status, 0)
-        return ((status >> 8) & 0xff, text)
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let waited = waitpid(childPID, &status, WNOHANG)
+            if waited == childPID { break }
+            if waited < 0 { break }
+            if Date() > deadline {
+                kill(childPID, SIGKILL)
+                _ = waitpid(childPID, &status, 0)
+                break
+            }
+            usleep(20_000)
+        }
+
+        let code: Int32
+        if status & 0x7f == 0 {
+            code = (status >> 8) & 0xff
+        } else {
+            code = 128 + (status & 0x7f)
+        }
+
+        try? handle.close()
+        let data = (try? Data(contentsOf: temp)) ?? Data()
+        let text = String(decoding: data.prefix(500), as: UTF8.self)
+            .replacingOccurrences(of: "\n", with: " | ")
+            .trimmingCharacters(in: .whitespaces)
+        return RunResult(rc: code, output: text)
+    }
+
+    /// UI 里「persona 探测」用的就地提权尝试。没戏就如实说没戏，不要含糊。
+    public static func tryInProcessSetuid() -> String {
+        let before = getuid()
+        errno = 0
+        let rc = setuid(0)
+        let after = geteuid()
+        if rc == 0 {
+            return "就地 setuid(0): 成功（uid \(before) → \(after)）"
+        }
+        return "就地 setuid(0): 失败 rc=\(rc) errno=\(errno)（仍是 uid \(after)）"
+    }
+
+    public static func runUidProbe(personaID: Int32?) -> String {
+        guard let bash = helper("bash.real") else { return "uid 探测: 找不到 bash.real" }
+        let persona = personaID.map { UInt64(bitPattern: Int64($0)) }
+        guard let result = spawn(bash, args: ["bash.real", "-c", "echo UID=$UID; echo EUID=$EUID"], personaID: persona) else {
+            return "uid 探测: 起进程失败"
+        }
+        return "uid 探测(persona=\(personaID.map(String.init) ?? "nil")): rc=\(result.rc) \(result.output)"
+    }
+
+    // MARK: - 写权限测试（全部用 bash 内建重定向，不 exec 第二层）
+
+    public static func bundleWriteTest() -> [String] {
+        guard let bash = helper("bash.real") else { return ["写包测试: 找不到 bash.real"] }
+        let target = Bundle.main.bundlePath + "/.nmwrite-probe"
+        var lines: [String] = []
+
+        let script = "echo ok > '\(target)' && echo WROTE"
+
+        if let base = spawn(bash, args: ["bash.real", "-c", script], personaID: nil) {
+            let exists = FileManager.default.fileExists(atPath: target)
+            lines.append("写包(基线 uid=\(getuid())): rc=\(base.rc) 存在=\(exists) \(base.output)")
+        }
+        try? FileManager.default.removeItem(atPath: target)
+
+        if let root = rootPersonaID64().id,
+           let elevated = spawn(bash, args: ["bash.real", "-c", script], personaID: root) {
+            let exists = FileManager.default.fileExists(atPath: target)
+            lines.append("写包(root persona=\(root)): rc=\(elevated.rc) 存在=\(exists) \(elevated.output)")
+            try? FileManager.default.removeItem(atPath: target)
+        } else {
+            lines.append("写包(root persona): 未取得 persona id，跳过")
+        }
+        return lines
+    }
+
+    public static func jbWriteTest() -> [String] {
+        guard let bash = helper("bash.real") else { return ["写越狱目录: 找不到 bash.real"] }
+        let target = "/var/jb/.nmwrite-probe"
+        var lines: [String] = []
+
+        if let base = spawn(bash, args: ["bash.real", "-c", "echo ok > '\(target)' && echo WROTE"], personaID: nil) {
+            let exists = FileManager.default.fileExists(atPath: target)
+            lines.append("写/var/jb(基线): rc=\(base.rc) 存在=\(exists) \(base.output)")
+        }
+        try? FileManager.default.removeItem(atPath: target)
+
+        if let root = rootPersonaID64().id,
+           let elevated = spawn(bash, args: ["bash.real", "-c", "echo ok > '\(target)' && echo WROTE"], personaID: root) {
+            let exists = FileManager.default.fileExists(atPath: target)
+            lines.append("写/var/jb(root persona): rc=\(elevated.rc) 存在=\(exists) \(elevated.output)")
+            try? FileManager.default.removeItem(atPath: target)
+        } else {
+            lines.append("写/var/jb(root persona): 未取得 persona id，跳过")
+        }
+        return lines
+    }
+
+    /// 真正关心的问题：能不能执行越狱侧的 dpkg（装 deb 的前提）。
+    public static func jbExecTest() -> [String] {
+        let dpkg = "/var/jb/usr/bin/dpkg"
+        guard FileManager.default.isExecutableFile(atPath: dpkg) else {
+            return ["exec \(dpkg): 文件不存在或不可执行"]
+        }
+        var lines: [String] = []
+        for (label, persona) in [("基线", nil as UInt64?), ("root persona", rootPersonaID64().id)] {
+            guard let pid = persona else { lines.append("exec dpkg(\(label)): 无 persona id"); continue }
+            if let result = spawn(dpkg, args: ["dpkg", "--version"], personaID: pid) {
+                lines.append("exec dpkg(\(label)): rc=\(result.rc) \(result.output)")
+            }
+        }
+        return lines
+    }
+
+    // MARK: - 汇总落盘
+
+    public static func diagnostics() -> [String] {
+        var lines: [String] = []
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        lines.append("===== persona 探测 \(formatter.string(from: Date())) =====")
+        lines.append("bundle=\(Bundle.main.bundlePath)")
+        lines.append("自身 uid=\(getuid()) euid=\(geteuid())")
+        lines.append("符号: find=\(find != nil) get=\(get != nil) set_persona=\(setPersona != nil)")
+
+        let own = ownPersonaID()
+        lines.append("kpersona_get: rc=\(own.rc) id=\(own.id.map(String.init) ?? "-")")
+        lines.append(contentsOf: findVariantReport())
+
+        let root = rootPersonaID64()
+        lines.append("root persona: id=\(root.id.map(String.init) ?? "-") rc=\(root.rc)")
+        lines.append(runUidProbe(personaID: root.id.flatMap { $0 <= UInt64(Int32.max) ? Int32($0) : nil }))
+        lines.append(contentsOf: bundleWriteTest())
+        lines.append(contentsOf: jbWriteTest())
+        lines.append(contentsOf: jbExecTest())
+        return lines
+    }
+
+    public static func probeAndWrite() {
+        let lines = diagnostics()
+        let target = NanoMuseAutoDiag.documentsURL().appendingPathComponent("persona-diag.txt")
+        let text = lines.joined(separator: "\n") + "\n\n"
+        if let handle = try? FileHandle(forWritingTo: target) {
+            handle.seekToEndOfFile()
+            handle.write(Data(text.utf8))
+            try? handle.close()
+        } else {
+            try? text.write(to: target, atomically: true, encoding: .utf8)
+        }
     }
 }
