@@ -109,30 +109,6 @@ enum NanoMuseTools {
                 """#
             ),
             NanoMuseToolSpec(
-                id: "theos",
-                title: "Theos（插件脚手架）",
-                subtitle: "makefile / NIC 模板，越狱插件工程骨架",
-                sizeHint: "约 60 MB",
-                checkCommand: #"[ -d /opt/theos/makefiles ] && echo "theos 已就位" || true"#,
-                installScript: #"""
-                set -u
-                echo "STEP 1/3 安装 git + make"
-                apk add --no-cache git make 2>&1 | tail -5
-                echo "STEP 2/3 拉取 Theos 到 /opt/theos"
-                export THEOS=/opt/theos
-                if [ -d "$THEOS/.git" ]; then
-                  (cd "$THEOS" && git pull --ff-only 2>&1 | tail -3)
-                else
-                  git clone --depth 1 --recursive https://github.com/theos/theos.git "$THEOS" 2>&1 | tail -6
-                fi
-                echo "STEP 3/3 检查"
-                ls "$THEOS/makefiles" 2>/dev/null | head -5
-                echo "  THEOS=$THEOS"
-                echo "  提示：Alpine 的 clang 产出 Linux ELF；编 iOS 插件需要 Mach-O 工具链，另配。"
-                echo "STEP done"
-                """#
-            ),
-            NanoMuseToolSpec(
                 id: "openssh",
                 title: "OpenSSH 客户端",
                 subtitle: "ssh / scp，连自己的机器",

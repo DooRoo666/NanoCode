@@ -19,7 +19,6 @@ enum NanoMuseAutoDiag {
                 try? FileManager.default.removeItem(at: file)
             }
             NanoMusePersona.probeAndWrite()
-            NanoMuseRuntimeDiag.write()
         }
     }
 }

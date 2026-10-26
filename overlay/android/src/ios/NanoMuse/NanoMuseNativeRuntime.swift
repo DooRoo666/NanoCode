@@ -53,7 +53,7 @@ enum NanoMuseNativeRuntime {
     static var rootDirectory: URL {
         let bundled = URL(fileURLWithPath: Bundle.main.bundlePath)
             .appendingPathComponent("Runtimes", isDirectory: true)
-        if NanoMuseTheosRuntime.canWrite(bundled.path) {
+        if NanoMuseStorage.canWrite(bundled.path) {
             return bundled
         }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first

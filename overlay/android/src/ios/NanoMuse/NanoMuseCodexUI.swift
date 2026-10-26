@@ -96,8 +96,6 @@ struct NanoMuseCodexView: View {
         NanoMuseCard {
             capabilityRow(.codex)
             NanoMuseRowDivider()
-            capabilityRow(.theos)
-            NanoMuseRowDivider()
             capabilityRow(.models)
         }
         groupHeader("扩展工具")
@@ -141,7 +139,6 @@ struct NanoMuseCodexView: View {
     private func detailText(for item: CodexPanel) -> String {
         switch item {
         case .codex: return "原生二进制 · 宿主直跑"
-        case .theos: return toolStatus["theos"] ?? "TheosRuntime · 未检测"
         case .models: return "来源 / 模型 / 密钥"
         case .packaged: return "288 个程序 · Python 3.13 · perl 5.32"
         case .tools: return "\(NanoMuseTools.catalog.count) 个可下载工具"
@@ -172,9 +169,6 @@ struct NanoMuseCodexView: View {
             statusCard
             logCard
             advancedCard
-        case .theos:
-            theosCard
-            logCard
         case .packaged:
             packagedCard
             logCard
@@ -190,55 +184,6 @@ struct NanoMuseCodexView: View {
             runCard
             if !output.isEmpty { outputCard }
             logCard
-        }
-    }
-
-    private var theosCard: some View {
-        NanoMuseCard {
-            NanoMuseActionRow(title: "下载 Theos 运行时（224MB，装进 .app）", chevron: false) {
-                logLines.removeAll()
-                append("===== 下载 TheosRuntime =====")
-                Task {
-                    do {
-                        let url = try await NanoMuseRuntimeInstaller.installNamed("theos") { line in
-                            append(line)
-                        }
-                        append("安装完成：\(url.path)")
-                    } catch {
-                        append("失败：\(error.localizedDescription)")
-                    }
-                    await refreshAll()
-                }
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "下载核心工具（tar/sed/make/perl）", chevron: false) {
-                logLines.removeAll()
-                append("===== 下载 core_tools =====")
-                Task {
-                    do {
-                        let url = try await NanoMuseRuntimeInstaller.installNamed("core_tools") { line in
-                            append(line)
-                        }
-                        append("安装完成：\(url.path)")
-                    } catch {
-                        append("失败：\(error.localizedDescription)")
-                    }
-                    await refreshAll()
-                }
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "准备 Theos 运行时（安装 → 重签 → 自检）", chevron: false) {
-                logLines.removeAll()
-                append("===== Theos 运行时 =====")
-                Task {
-                    _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
-                    await refreshAll()
-                }
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "重新检测", chevron: false) {
-                Task { await refreshAll() }
-            }
         }
     }
 
@@ -366,22 +311,6 @@ struct NanoMuseCodexView: View {
                 append(NanoMusePersona.tryInProcessSetuid())
                 for line in NanoMusePersona.bundleWriteTest() { append(line) }
                 append("结果已写入 Documents/persona-diag.txt")
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "Theos 工具链", chevron: true) {
-                guard !busy, !nativeRunning else { return }
-                logLines.removeAll()
-                nativeLog.clear()
-                append("===== Theos 工具链 =====")
-                Task {
-                    append("运行时目录：\(NanoMuseTheosRuntime.installRoot)")
-                    _ = await NanoMuseTheosRuntime.prepareAll { line in append(line) }
-                    for line in NanoMusePersonaProbe.report() { append(line) }
-                    append("--- persona root 探测（写 Documents/persona-diag.txt）---")
-                    NanoMusePersona.probeAndWrite()
-                    append(NanoMusePersona.tryInProcessSetuid())
-                    for line in NanoMusePersona.bundleWriteTest() { append(line) }
-                }
             }
             NanoMuseRowDivider()
             NanoMuseActionRow(title: "路由与密钥", chevron: true) {
@@ -613,12 +542,12 @@ struct NanoMuseCodexView: View {
                 guard !busy else { return }
                 testSigner()
             }
-            if let theos = NanoMuseTools.catalog.first(where: { $0.id == "theos" }) {
+            if let codex = NanoMuseTools.catalog.first(where: { $0.id == "codex" }) {
                 NanoMuseRowDivider()
-                NanoMuseActionRow(title: busy ? "忙…" : (toolStatus["theos"] ?? "安装 Theos（Alpine）"),
+                NanoMuseActionRow(title: busy ? "忙…" : (toolStatus["codex"] ?? "安装 Codex"),
                                   chevron: false) {
                     guard !busy else { return }
-                    install(theos)
+                    install(codex)
                 }
             }
         }
@@ -1283,14 +1212,13 @@ extension NanoMuseSettingsHomeView {
 // MARK: - 分组枚举与总览行
 
 enum CodexPanel: String, CaseIterable, Identifiable {
-    case codex, theos, models, packaged, tools, signing, storage, diag
+    case codex, models, packaged, tools, signing, storage, diag
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .codex: return "Codex 运行环境"
-        case .theos: return "Theos 运行时"
         case .models: return "模型与路由"
         case .packaged: return "随包工具链"
         case .tools: return "工具管理"
@@ -1303,7 +1231,6 @@ enum CodexPanel: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .codex: return "terminal"
-        case .theos: return "hammer"
         case .models: return "cpu"
         case .packaged: return "shippingbox"
         case .tools: return "wrench.and.screwdriver"
@@ -1316,7 +1243,6 @@ enum CodexPanel: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .codex: return .blue
-        case .theos: return .indigo
         case .models: return .purple
         case .packaged: return .teal
         case .tools: return .orange

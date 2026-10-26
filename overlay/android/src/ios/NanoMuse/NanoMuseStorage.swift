@@ -63,8 +63,19 @@ enum NanoMuseStorage {
     private static var caches: String { library + "/Caches" }
     private static var tmp: String { NSTemporaryDirectory() }
 
-    /// Theos 工具链（自己容器里那份）
-    static var theosRoot: String { library + "/TheosRuntime" }
+    /// 探测目录是否可写（原在 TheosRuntime 里，已迁出）
+    static func canWrite(_ dir: String) -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let probe = dir + "/.write-probe-\(UUID().uuidString.prefix(8))"
+        let ok = fm.createFile(atPath: probe, contents: Data("x".utf8))
+        if ok, fm.fileExists(atPath: probe) {
+            try? fm.removeItem(atPath: probe)
+            return true
+        }
+        try? fm.removeItem(atPath: probe)
+        return false
+    }
 
     /// 运行时安装根目录（codex / python / node …）
     static var runtimesRoot: String { NanoMuseNativeRuntime.rootDirectory.path }
@@ -85,25 +96,9 @@ enum NanoMuseStorage {
                              paths: [dir.path]))
         }
 
-        // ② Theos 工具链
-        let theosSize = size(of: theosRoot)
-        if theosSize > 0 {
-            list.append(Item(id: "theos",
-                             title: "Theos 工具链",
-                             detail: "clang / make / ld64 / ldid / dpkg-deb",
-                             bytes: theosSize,
-                             isCache: false,
-                             paths: [theosRoot]))
-        }
-
         // ③ 下载残留（我们自己的 .tar.gz / 分片）
         var leftovers: [String] = []
-        for name in ["TheosRuntime.tar.gz"] {
-            let p = tmp + name
-            if FileManager.default.fileExists(atPath: p) { leftovers.append(p) }
-        }
-        let legacy = "/private/var/tmp/TheosRuntime.tar.gz"
-        if FileManager.default.fileExists(atPath: legacy) { leftovers.append(legacy) }
+        /* 预留：后续新增运行时下载残留在此登记 */
         let leftoverSize = leftovers.reduce(Int64(0)) { $0 + size(of: $1) }
         if leftoverSize > 0 {
             list.append(Item(id: "downloads",

@@ -6,7 +6,7 @@ extension NanoMuseCodexView {
     var extraCard: some View {
         NanoMuseCard {
             NavigationLink { NanoMuseRuntimePage() } label: {
-                row(title: "运行时（原版清单）", subtitle: "codex · theos · ollvm · node · python · 逆向工具")
+                row(title: "运行时（原版清单）", subtitle: "codex · ollvm · node · python · 逆向工具")
             }
             .buttonStyle(.plain)
             NanoMuseRowDivider()
@@ -114,7 +114,7 @@ struct NanoMuseRuntimePage: View {
                         .padding(.horizontal, 16).padding(.bottom, 10)
                 }
             }
-            NanoMuseCaption(text: "与 MT-Agent 同一份清单。原生包是 iOS 产物（codex 是 iphoneos-arm64.deb、theos 带 iPhoneOS16.5.sdk），装到 App 容器；Alpine 包才是 Linux 工具。")
+            NanoMuseCaption(text: "与 MT-Agent 同一份清单。原生包是 iOS 产物（codex 是 iphoneos-arm64.deb），装到 App 容器；Alpine 包才是 Linux 工具。")
 
             if !packages.isEmpty {
                 NanoMuseCard {
