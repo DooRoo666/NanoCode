@@ -900,8 +900,15 @@ public enum NanoMuseCodex {
             if (env["DYLD_LIBRARY_PATH"] ?? "").isEmpty {
                 env["DYLD_LIBRARY_PATH"] = rtRoot + "/lib"
             }
+            // perl 的 @INC 编死成 /usr/lib/perl5，只能靠 PERL5LIB 指到包内；
+            // python 用 @executable_path 找同目录的 Python.framework，只需 PYTHONHOME。
+            let pyRoot = NanoMuseHelperRunner.helpersDirectory + "/py"
+            env["PERL5LIB"] = rtRoot + "/lib/perl5/5.32.1:" + rtRoot + "/lib/perl5/site_perl"
+            if (env["PYTHONHOME"] ?? "").isEmpty {
+                env["PYTHONHOME"] = pyRoot + "/PythonHome"
+            }
             env["PATH"] = (
-                [binDir.path, hostToolsDir, rtRoot + "/bin", NanoMuseHelperRunner.helpersDirectory]
+                [binDir.path, hostToolsDir, rtRoot + "/bin", pyRoot, NanoMuseHelperRunner.helpersDirectory]
                 + runtimePath
                 + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
             ).joined(separator: ":")
