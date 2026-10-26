@@ -1,0 +1,55 @@
+name: Codex iOS (宿主原生)
+
+# 目标：产出 arm64-apple-ios 的 codex 可执行文件（Mach-O），
+# 放进 .app/Helpers/ 后由 App 以宿主进程拉起 —— 这样 Codex 直接就是
+# 宿主进程，读系统文件不需要任何桥。此工作流只编译 codex，不碰 App 构建。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/codex-ios.yml'
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: 准备 Rust 与 iOS 目标
+        run: |
+          rustup target add aarch64-apple-ios
+          rustc --version
+          xcrun --sdk iphoneos --show-sdk-path
+
+      - name: 拉取 codex 源码
+        run: |
+          git clone --depth 1 https://github.com/openai/codex.git src
+          ls src/codex-rs | head -20
+          grep -m1 '^rust-version' src/codex-rs/Cargo.toml || true
+
+      - name: 缓存 cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: codex-ios-cargo-${{ hashFiles('src/codex-rs/Cargo.lock') }}
+          restore-keys: codex-ios-cargo-
+
+      - name: 编译 codex（iOS arm64）
+        run: |
+          cd src/codex-rs
+          set -o pipefail
+          cargo build --release --target aarch64-apple-ios 2>&1 | tee /tmp/build.log | tail -60
+          echo "=== 产物 ==="
+          ls -l target/aarch64-apple-ios/release/ | head -20
+
+      - name: 上传产物
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-ios
+          path: |
+            src/codex-rs/target/aarch64-apple-ios/release/codex
+            /tmp/build.log
+          if-no-files-found: warn
