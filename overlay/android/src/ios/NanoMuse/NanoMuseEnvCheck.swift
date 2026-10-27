@@ -186,15 +186,23 @@ enum NanoMuseEnvProbe {
     /// 运行时清单：优先用真实 manifest，失败时退回固定表
     static func runtimeSection() async -> NanoMuseEnvSection {
         var rows: [NanoMuseEnvRow] = []
+        // 两套安装位置都要看：App 自身目录（原生，优先）与 Alpine 侧。
+        // 之前只问 Alpine 的 /opt/runtimes，导致 App 自己装好的运行时被显示成「未安装」。
+        let nativeIDs = Set(NanoMuseNativeRuntime.installedIDs())
+        var manifestIDs = Set<String>()
         do {
             let manifest = try await NanoMuseRuntimeManifest.fetch()
             let packages = manifest.packages
+            manifestIDs = Set(packages.map { $0.id })
             let status = await runtimeInstalled(ids: packages.map { $0.id })
             for p in packages {
-                let on = status[p.id] ?? false
-                rows.append(NanoMuseEnvRow(status: on ? .ok : .skip,
+                let onNative = nativeIDs.contains(p.id)
+                let onAlpine = !onNative && (status[p.id] ?? false)
+                let source = onNative ? "原生 · App 目录" : (onAlpine ? "Alpine 侧" : "")
+                rows.append(NanoMuseEnvRow(status: (onNative || onAlpine) ? .ok : .skip,
                                            title: p.displayName,
-                                           detail: on ? "已安装 · \(p.sizeText)" : "未安装 · \(p.sizeText)"))
+                                           detail: (onNative || onAlpine) ? "已安装 · \(source) · \(p.sizeText)"
+                                                                          : "未安装 · \(p.sizeText)"))
             }
         } catch {
             rows.append(NanoMuseEnvRow(status: .warn, title: "运行时清单", detail: "拉取失败：\(error.localizedDescription)"))
@@ -202,7 +210,15 @@ enum NanoMuseEnvProbe {
         if rows.isEmpty {
             rows.append(NanoMuseEnvRow(status: .skip, title: "运行时", detail: "清单为空"))
         }
-        return NanoMuseEnvSection(id: "runtime", title: "运行时", note: "来自远端 runtime manifest", optional: false, rows: rows)
+        // 已装在 App 自身目录、但不在远端清单里的（随包附带或手工装的）也列出来
+        for id in nativeIDs.subtracting(manifestIDs).sorted() {
+            rows.append(NanoMuseEnvRow(status: .ok, title: id, detail: "已安装 · 原生 · App 目录"))
+        }
+        rows.append(NanoMuseEnvRow(status: .info, title: "安装位置",
+                                   detail: NanoMuseNativeRuntime.rootDirectory.path))
+        return NanoMuseEnvSection(id: "runtime", title: "运行时",
+                                  note: "优先 App 自身目录（原生），其次 Alpine 侧；不借用其它 App",
+                                  optional: false, rows: rows)
     }
 
     static func runtimeInstalled(ids: [String]) async -> [String: Bool] {
