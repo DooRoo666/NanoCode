@@ -104,6 +104,8 @@ struct NanoMuseCodexView: View {
         NanoMuseCard {
             capabilityRow(.storage)
             NanoMuseRowDivider()
+            capabilityRow(.envcheck)
+            NanoMuseRowDivider()
             capabilityRow(.diag)
         }
     }
@@ -134,6 +136,7 @@ struct NanoMuseCodexView: View {
         case .signing: return "codex-sign · 随包资源 · tipa"
         case .storage: return "运行时与缓存占用"
         case .diag: return "回显 · 进程阶梯 · 协议 · 打包"
+        case .envcheck: return "运行时 · 工具链 · 上游连通性"
         }
     }
 
@@ -172,6 +175,8 @@ struct NanoMuseCodexView: View {
             runCard
             if !output.isEmpty { outputCard }
             if !displayLines.isEmpty { logCard }
+        case .envcheck:
+            NanoMuseEnvCheckView()
         }
     }
 
@@ -1151,7 +1156,7 @@ extension NanoMuseSettingsHomeView {
 // MARK: - 分组枚举与总览行
 
 enum CodexPanel: String, CaseIterable, Identifiable {
-    case codex, models, packaged, tools, signing, storage, diag
+    case codex, models, packaged, tools, signing, storage, diag, envcheck
 
     var id: String { rawValue }
 
@@ -1164,6 +1169,7 @@ enum CodexPanel: String, CaseIterable, Identifiable {
         case .signing: return "签名与随包资源"
         case .storage: return "存储"
         case .diag: return "运行诊断"
+        case .envcheck: return "环境检测"
         }
     }
 
@@ -1176,6 +1182,7 @@ enum CodexPanel: String, CaseIterable, Identifiable {
         case .signing: return "signature"
         case .storage: return "internaldrive"
         case .diag: return "stethoscope"
+        case .envcheck: return "list.bullet.rectangle"
         }
     }
 
@@ -1188,6 +1195,7 @@ enum CodexPanel: String, CaseIterable, Identifiable {
         case .signing: return .pink
         case .storage: return .gray
         case .diag: return .green
+        case .envcheck: return .cyan
         }
     }
 }
