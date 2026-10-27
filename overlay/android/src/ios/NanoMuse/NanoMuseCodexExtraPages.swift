@@ -171,7 +171,12 @@ struct NanoMuseRuntimePage: View {
                 Menu {
                     Button("卸载", role: .destructive) {
                         Task {
-                            NanoMuseNativeRuntime.uninstall(package.id)
+                            do {
+                                _ = try NanoMuseNativeRuntime.uninstall(package.id)
+                                manifestError = nil
+                            } catch {
+                                manifestError = error.localizedDescription
+                            }
                             await load()
                         }
                     }

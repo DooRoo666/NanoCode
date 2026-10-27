@@ -1058,8 +1058,13 @@ struct NanoMuseCodexView: View {
             append("===== 卸载 \(spec.title) =====")
 
             if NanoMuseNativeRuntime.isInstalled(spec.id) {
-                let ok = NanoMuseNativeRuntime.uninstall(spec.id)
-                append(ok ? "已删除运行时目录" : "删除失败（目录可能被占用）")
+                do {
+                    _ = try NanoMuseNativeRuntime.uninstall(spec.id)
+                    toolStatus[spec.id] = nil
+                    append("已删除运行时目录")
+                } catch {
+                    append("删除失败：\(error.localizedDescription)")
+                }
             } else {
                 // 实测坑：iSH 里 /lib/apk/db/lock 一旦变陈旧，任何 apk 写操作都会返回
                 // "Unable to lock database: Operation not permitted"（连 root 也一样）。

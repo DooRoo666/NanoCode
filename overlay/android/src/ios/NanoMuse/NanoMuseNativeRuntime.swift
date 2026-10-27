@@ -82,16 +82,42 @@ enum NanoMuseNativeRuntime {
         return contents.filter { isInstalled($0) }
     }
 
-    /// 卸载：删掉整个运行时目录
-    @discardableResult
-    static func uninstall(_ id: String) -> Bool {
-        let dir = directory(for: id)
-        do {
-            try FileManager.default.removeItem(at: dir)
-            return true
-        } catch {
-            return false
+    enum UninstallError: LocalizedError {
+        case invalidID(String)
+        case notInstalled(String)
+        case outsideRoot(String)
+        case removalFailed(String)
+        case stillExists(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidID(let id): return "运行时标识无效：\(id)"
+            case .notInstalled(let id): return "运行时未安装：\(id)"
+            case .outsideRoot(let path): return "拒绝删除运行时根目录之外的路径：\(path)"
+            case .removalFailed(let message): return "删除运行时失败：\(message)"
+            case .stillExists(let path): return "删除后目标仍存在：\(path)"
+            }
         }
+    }
+
+    /// 仅删除 root 下的单个已安装运行时；保留 Foundation 的底层错误供 UI 显示。
+    @discardableResult
+    static func uninstall(_ id: String) throws -> Bool {
+        guard !id.isEmpty, id != ".", id != "..", !id.contains("/"), !id.contains("\\"),
+              !id.contains("\0") else { throw UninstallError.invalidID(id) }
+        let fm = FileManager.default
+        let root = rootDirectory.standardizedFileURL
+        let target = root.appendingPathComponent(id, isDirectory: true).standardizedFileURL
+        guard target.deletingLastPathComponent() == root, target != root else {
+            throw UninstallError.outsideRoot(target.path)
+        }
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: target.path, isDirectory: &isDir), isDir.boolValue,
+              isInstalled(id) else { throw UninstallError.notInstalled(id) }
+        do { try fm.removeItem(at: target) }
+        catch { throw UninstallError.removalFailed(error.localizedDescription) }
+        guard !fm.fileExists(atPath: target.path) else { throw UninstallError.stillExists(target.path) }
+        return true
     }
 
     // MARK: - 安装主流程

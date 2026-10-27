@@ -176,7 +176,8 @@ enum NanoMuseStorage {
             // 运行时目录用 NativeRuntime 自己的卸载逻辑（会一并清标记）
             if item.id.hasPrefix("runtime:") {
                 let id = String(item.id.dropFirst("runtime:".count))
-                if NanoMuseNativeRuntime.uninstall(id) { continue }
+                do { _ = try NanoMuseNativeRuntime.uninstall(id); continue }
+                catch { if fm.fileExists(atPath: path) { ok = false }; continue }
             }
             do {
                 try fm.removeItem(atPath: path)
