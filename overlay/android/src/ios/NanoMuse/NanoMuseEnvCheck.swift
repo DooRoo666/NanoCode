@@ -101,7 +101,7 @@ enum NanoMuseEnvProbe {
       if [ -n "$p" ]; then R ok "$c" "$p"; else R fail "$c" "未找到"; fi
     done
 
-    S 运行时目录 "Alpine 侧的可下载运行时（App 管理的运行时在宿主目录）" 0
+    S 运行时目录 "App 管理的运行时（宿主 runtimes 目录）" 0
     seen=" "
     for d in /opt/runtimes "$HOME/runtimes" /usr/local/runtimes; do
       case "$seen" in *" $d "*) continue ;; esac
@@ -224,29 +224,18 @@ enum NanoMuseEnvProbe {
 
     static func runtimeSection() async -> NanoMuseEnvSection {
         var rows: [NanoMuseEnvRow] = []
-        // 两套安装位置都要看：App 自身目录（原生，优先）与 Alpine 侧。
-        // 之前只问 Alpine 的 /opt/runtimes，导致 App 自己装好的运行时被显示成「未安装」。
+        // 运行时只有一种来源：App 自己的 runtimes 目录（宿主侧，跟着 App 本体装）。
+        // Alpine 里的同名命令是另一套东西，不在这一页提，免得和「工具管理」混淆。
         let nativeIDs = Set(NanoMuseNativeRuntime.installedIDs())
-        let alpineCLI = await alpineCLIs()
         var manifestIDs = Set<String>()
         do {
             let manifest = try await NanoMuseRuntimeManifest.fetch()
             let packages = manifest.packages
             manifestIDs = Set(packages.map { $0.id })
-            let status = await runtimeInstalled(ids: packages.map { $0.id })
             for p in packages {
                 let onNative = nativeIDs.contains(p.id)
-                let onAlpine = !onNative && (status[p.id] ?? false)
-                let source = onNative ? "原生 · App 目录" : (onAlpine ? "Alpine 侧" : "")
-                let detail: String
-                if onNative || onAlpine {
-                    detail = "已安装 · \(source) · \(p.sizeText)"
-                } else if let cli = alpineCLI[p.id] {
-                    detail = "未安装 · Alpine 侧另有 \(cli)（不是同一个包）"
-                } else {
-                    detail = "未安装 · \(p.sizeText)"
-                }
-                rows.append(NanoMuseEnvRow(status: (onNative || onAlpine) ? .ok : .skip,
+                let detail = onNative ? "已安装 · App 目录 · \(p.sizeText)" : "未安装 · \(p.sizeText)"
+                rows.append(NanoMuseEnvRow(status: onNative ? .ok : .skip,
                                            title: p.displayName, detail: detail))
             }
         } catch {
@@ -262,7 +251,7 @@ enum NanoMuseEnvProbe {
         rows.append(NanoMuseEnvRow(status: .info, title: "安装位置",
                                    detail: NanoMuseNativeRuntime.rootDirectory.path))
         return NanoMuseEnvSection(id: "runtime", title: "运行时",
-                                  note: "App 管理的运行时包（原生目录优先，其次 Alpine）。「工具管理」里列的是 Alpine 里 apk 装的命令，同名不同物",
+                                  note: "只列 App 自己的 runtimes 目录（宿主侧）。「工具管理」页是另一份清单：宿主自带的 Codex + Alpine（iSH）里用 apk 装的命令，两页不重叠",
                                   optional: false, rows: rows)
     }
 

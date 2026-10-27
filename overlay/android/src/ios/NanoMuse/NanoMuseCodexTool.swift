@@ -111,14 +111,26 @@ enum NanoMuseCodexSettings {
         )
     }
 
-    /// 思考强度：codex 的 `model_reasoning_effort`，可选 minimal/low/medium/high。
-    /// 作为子代理时用它控制"想多久"——越简单越快，复杂重构才开 high。
+    /// 思考强度：codex 的 `model_reasoning_effort`，可选 minimal/low/medium/high/max。
+    /// 作为子代理时用它控制"想多久"——越简单越快，复杂重构才开 high 以上。
     static var reasoningEffort: String {
         get { UserDefaults.standard.string(forKey: "nanocodex.reasoningEffort") ?? "medium" }
         set { UserDefaults.standard.set(newValue, forKey: "nanocodex.reasoningEffort") }
     }
 
-    static let reasoningEfforts = ["minimal", "low", "medium", "high"]
+    static let reasoningEfforts = ["minimal", "low", "medium", "high", "max"]
+
+    /// 分段控件里显示用的短标签：五个档位挤在一行，长单词会被截断
+    static func effortLabel(_ effort: String) -> String {
+        switch effort {
+        case "minimal": return "min"
+        case "low": return "low"
+        case "medium": return "med"
+        case "high": return "high"
+        case "max": return "max"
+        default: return effort
+        }
+    }
 
     /// 是否把随包的 codex-fallback-prompt.md 拼进任务前面（20.9 KB 工作准则）
     static var useFallbackPrompt: Bool {

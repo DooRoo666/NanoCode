@@ -132,7 +132,7 @@ struct NanoMuseCodexView: View {
         case .codex: return "原生二进制 · 宿主直跑"
         case .models: return "来源 / 模型 / 密钥"
         case .packaged: return "288 个程序 · Python 3.13 · perl 5.32"
-        case .tools: return "\(NanoMuseTools.catalog.count) 个可下载工具"
+        case .tools: return "宿主 \(NanoMuseTools.hostTools.count) 个 · Alpine \(NanoMuseTools.alpineTools.count) 个"
         case .signing: return "codex-sign · 随包资源 · tipa"
         case .storage: return "运行时与缓存占用"
         case .diag: return "回显 · 进程阶梯 · 协议 · 打包"
@@ -324,11 +324,31 @@ struct NanoMuseCodexView: View {
     // MARK: - 工具清单
 
     private var toolsCard: some View {
-        NanoMuseCard {
-            ForEach(Array(NanoMuseTools.catalog.enumerated()), id: \.element.id) { index, spec in
-                if index > 0 { NanoMuseRowDivider() }
-                toolRow(spec)
+        VStack(alignment: .leading, spacing: 10) {
+            groupHeader("宿主（App 运行时目录）")
+            NanoMuseCard {
+                ForEach(Array(NanoMuseTools.hostTools.enumerated()), id: \.element.id) { index, spec in
+                    if index > 0 { NanoMuseRowDivider() }
+                    toolRow(spec)
+                }
             }
+            Text("跟着 Codex 本体走，装在 App 自己的 runtimes 目录里。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
+
+            groupHeader("Alpine（iSH）")
+            .padding(.top, 6)
+            NanoMuseCard {
+                ForEach(Array(NanoMuseTools.alpineTools.enumerated()), id: \.element.id) { index, spec in
+                    if index > 0 { NanoMuseRowDivider() }
+                    toolRow(spec)
+                }
+            }
+            Text("用 apk 装在 Linux 侧，宿主 Codex 看不到这些命令。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 4)
         }
     }
 
@@ -347,7 +367,11 @@ struct NanoMuseCodexView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 8)
-            if isRunning {
+            if NanoMuseTools.hostToolIDs.contains(spec.id) {
+                Text("随 App 自带")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else if isRunning {
                 ProgressView().controlSize(.small)
             } else {
                 HStack(spacing: 14) {
@@ -713,7 +737,7 @@ struct NanoMuseCodexView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("思考强度")
                     .font(.body)
-                Text("作为子代理时：简单任务用 minimal/low 更快，复杂重构才要 high")
+                Text("作为子代理时：简单任务用 minimal/low 更快，复杂重构用 high，max 是上限（更慢更贵）")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Picker("", selection: Binding(
@@ -721,7 +745,7 @@ struct NanoMuseCodexView: View {
                     set: { NanoMuseCodexSettings.reasoningEffort = $0; effort = $0 }
                 )) {
                     ForEach(NanoMuseCodexSettings.reasoningEfforts, id: \.self) { e in
-                        Text(e).tag(e)
+                        Text(NanoMuseCodexSettings.effortLabel(e)).tag(e)
                     }
                 }
                 .pickerStyle(.segmented)

@@ -20,8 +20,8 @@ enum NanoMuseTools {
             NanoMuseToolSpec(
                 id: "codex",
                 title: "Codex",
-                subtitle: "OpenAI 的编码 Agent，arm64 musl 官方包",
-                sizeHint: "约 100 MB",
+                subtitle: "宿主运行时 · 装在 App 自己的 runtimes 目录，与 iSH 无关",
+                sizeHint: "约 245 MB",
                 checkCommand: "[ -x /usr/local/bin/codex ] && echo \"已装 $(stat -c %s /usr/local/bin/codex 2>/dev/null) bytes\" || true",
                 installScript: NanoMuseCodex.installScript
             ),
@@ -126,23 +126,32 @@ enum NanoMuseTools {
         ]
     }
 
+    /// 宿主（App 自己的 runtimes 目录）里的工具，其它一律算 Alpine（iSH）用 apk 装的
+    static let hostToolIDs: Set<String> = ["codex"]
+
+    static var hostTools: [NanoMuseToolSpec] {
+        catalog.filter { hostToolIDs.contains($0.id) }
+    }
+
+    static var alpineTools: [NanoMuseToolSpec] {
+        catalog.filter { !hostToolIDs.contains($0.id) }
+    }
+
     /// 查询某工具状态：有输出即已安装（输出就是版本行）
     static func status(of spec: NanoMuseToolSpec) async -> String? {
-        // Codex 本体两条路线都算「已装」：只装了原生时，
-        // Alpine 里那条 `[ -x /usr/local/bin/codex ]` 探针什么也不会输出。
+        // Codex 是宿主侧工具：只认 App 自己的 runtimes 目录，Alpine 里那条探针不作数。
         if spec.id == "codex", let native = NanoMuseCodex.nativeBinary() {
             let mb = native.size / 1048576
-            var text = mb > 0 ? "原生 已装 \(mb) MB" : "原生 已装"
+            var text = mb > 0 ? "已装 \(mb) MB" : "已装"
             if let version = NanoMuseCodex.cachedNativeVersion(path: native.path, size: native.size) {
                 text += " · " + version
             }
             return text
         }
-        let (_, output) = await NanoMuseCodex.runCommand("\(spec.checkCommand) 2>/dev/null || true", timeout: 60)
+        // 注意：不能加 2>/dev/null —— ssh -V 之类只往 stderr 写版本号，会把输出吞掉
+        let (_, output) = await NanoMuseCodex.runCommand("\(spec.checkCommand) 2>&1 || true", timeout: 60)
         let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        let first = text.split(separator: "\n").first.map(String.init) ?? text
-        // 这一页除 Codex 外都跑在 Alpine 里，标明来源，避免和「环境检测 → 运行时」同名混淆
-        return "Alpine · " + first
+        return text.split(separator: "\n").first.map(String.init) ?? text
     }
 }
