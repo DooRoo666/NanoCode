@@ -92,19 +92,13 @@ struct NanoMuseCodexView: View {
 
     @ViewBuilder
     private var overview: some View {
-        groupHeader("核心能力")
+        groupHeader("Codex")
         NanoMuseCard {
             capabilityRow(.codex)
             NanoMuseRowDivider()
             capabilityRow(.models)
-        }
-        groupHeader("扩展工具")
-        NanoMuseCard {
-            capabilityRow(.packaged)
             NanoMuseRowDivider()
             capabilityRow(.tools)
-            NanoMuseRowDivider()
-            capabilityRow(.signing)
         }
         groupHeader("维护")
         NanoMuseCard {
@@ -112,11 +106,6 @@ struct NanoMuseCodexView: View {
             NanoMuseRowDivider()
             capabilityRow(.diag)
         }
-        Text("必须进包的工具已随 App 安装（288 个程序 / Python 3.13 / perl），其余在可写目录运行。")
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 4)
     }
 
     private func groupHeader(_ text: String) -> some View {
@@ -167,11 +156,10 @@ struct NanoMuseCodexView: View {
             modelCard
         case .codex:
             statusCard
-            logCard
+            if !displayLines.isEmpty { logCard }
             advancedCard
         case .packaged:
             packagedCard
-            logCard
         case .tools:
             toolsCard
         case .storage:
@@ -183,7 +171,7 @@ struct NanoMuseCodexView: View {
             extraCard
             runCard
             if !output.isEmpty { outputCard }
-            logCard
+            if !displayLines.isEmpty { logCard }
         }
     }
 
@@ -279,22 +267,10 @@ struct NanoMuseCodexView: View {
                 installNativeCodex()
             }
             NanoMuseRowDivider()
-            NanoMuseActionRow(title: busy || nativeRunning ? "安装中…" : "Alpine 安装（Linux ELF）", chevron: false) {
-                guard !busy, !nativeRunning else { return }
-                if let spec = NanoMuseTools.catalog.first(where: { $0.id == "codex" }) {
-                    install(spec)
-                }
-            }
-            NanoMuseRowDivider()
             NanoMuseActionRow(title: "重新检测", chevron: false) {
                 guard !busy, !nativeRunning else { return }
                 codexStatus = nil
                 Task { await refreshAll() }
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "诊断与维护", chevron: true) {
-                guard !busy, !nativeRunning else { return }
-                diagnose()
             }
         }
     }
@@ -302,31 +278,9 @@ struct NanoMuseCodexView: View {
     /// 高级维护：只保留真正会用到的几项
     private var advancedCard: some View {
         NanoMuseCard {
-            NanoMuseActionRow(title: "persona 探测（不下载）", chevron: true) {
-                guard !busy, !nativeRunning else { return }
-                logLines.removeAll()
-                append("===== persona 探测 =====")
-                for line in NanoMusePersonaProbe.report() { append(line) }
-                NanoMusePersona.probeAndWrite()
-                append(NanoMusePersona.tryInProcessSetuid())
-                for line in NanoMusePersona.bundleWriteTest() { append(line) }
-                append("结果已写入 Documents/persona-diag.txt")
-            }
-            NanoMuseRowDivider()
             NanoMuseActionRow(title: "路由与密钥", chevron: true) {
                 guard !busy, !nativeRunning else { return }
                 checkProviders()
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "进程阶梯测试", chevron: true) {
-                guard !busy, !nativeRunning else { return }
-                logLines.removeAll()
-                nativeLog.clear()
-                append("===== 进程阶梯测试 =====")
-                Task {
-                    let report = await NanoMuseCodex.processLadder()
-                    for line in report.split(separator: "\n") { append(String(line)) }
-                }
             }
             NanoMuseRowDivider()
             NanoMuseActionRow(title: "协议：\(wireAPI == "responses" ? "responses" : "chat")", chevron: true) {
@@ -334,26 +288,6 @@ struct NanoMuseCodexView: View {
                 wireAPI = next
                 NanoMuseCodexSettings.wireAPI = next
                 append("wire_api 已切换为 \(next)")
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "权限对照（原生 vs iSH）", chevron: true) {
-                guard !busy, !nativeRunning else { return }
-                probePermissions()
-            }
-            NanoMuseRowDivider()
-            NanoMuseActionRow(title: "打包成 tipa", chevron: true) {
-                guard !busy, !nativeRunning else { return }
-                logLines.removeAll()
-                nativeLog.clear()
-                append("===== 本地打包 tipa =====")
-                let raw = tipaPath.trimmingCharacters(in: .whitespacesAndNewlines)
-                let path = raw.isEmpty ? Bundle.main.bundlePath : raw
-                Task {
-                    let report = await Task.detached(priority: .userInitiated) {
-                        await NanoMuseTipaBuilder.build(appPath: path)
-                    }.value
-                    for line in report.lines { append(line) }
-                }
             }
         }
     }
@@ -607,7 +541,7 @@ struct NanoMuseCodexView: View {
     private var logCard: some View {
         NanoMuseCard {
             HStack {
-                Text("安装回显")
+                Text("输出")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
