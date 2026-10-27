@@ -101,8 +101,11 @@ enum NanoMuseEnvProbe {
       if [ -n "$p" ]; then R ok "$c" "$p"; else R fail "$c" "未找到"; fi
     done
 
-    S 运行时目录 "Codex / Python / Theos 等可下载运行时" 0
-    for d in /opt/runtimes /root/runtimes "$HOME/runtimes" /usr/local/runtimes; do
+    S 运行时目录 "Alpine 侧的可下载运行时（App 管理的运行时在宿主目录）" 0
+    seen=" "
+    for d in /opt/runtimes "$HOME/runtimes" /usr/local/runtimes; do
+      case "$seen" in *" $d "*) continue ;; esac
+      seen="$seen$d "
       if [ -d "$d" ]; then
         n=$(ls -1 "$d" 2>/dev/null | wc -l | tr -d ' ')
         R ok "$d" "$(sz "$d") · $n 项"
@@ -137,14 +140,28 @@ enum NanoMuseEnvProbe {
         R warn "base_url" "未配置（使用默认端点）"
       else
         R ok "base_url" "$base"
+        # 端点是否可用：有 key 就带上再测，避免把 401 误报成「需鉴权」
+        authkey=""
+        for f in "$HOME/.codex/auth.json" "$HOME/auth.json"; do
+          [ -f "$f" ] || continue
+          k=$(grep -o '"OPENAI_API_KEY"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)"$/\1/')
+          [ -n "$k" ] && { authkey="$k"; break; }
+        done
+        [ -z "$authkey" ] && [ -n "$OPENAI_API_KEY" ] && authkey="$OPENAI_API_KEY"
         if command -v curl >/dev/null 2>&1; then
           t0=$(date +%s)
-          me=$(curl -s -o /dev/null -m 8 -w '%{http_code}' "$base/models" 2>/dev/null)
+          if [ -n "$authkey" ]; then
+            me=$(curl -s -o /dev/null -m 8 -w '%{http_code}' -H "Authorization: Bearer $authkey" "$base/models" 2>/dev/null)
+            tagged="（带 API key）"
+          else
+            me=$(curl -s -o /dev/null -m 8 -w '%{http_code}' "$base/models" 2>/dev/null)
+            tagged="（无 key）"
+          fi
           t1=$(date +%s)
           dt=$((t1 - t0))
           case "$me" in
-            2??) R ok "GET /models" "HTTP $me · ${dt}s" ;;
-            401|403) R warn "GET /models" "HTTP $me · 需鉴权（端点可达）· ${dt}s" ;;
+            2??) R ok "GET /models" "HTTP $me ${tagged} · ${dt}s" ;;
+            401|403) R warn "GET /models" "HTTP $me ${tagged} · 端点可达但鉴权未过 · ${dt}s" ;;
             000|"") R fail "GET /models" "无响应 · 连接失败或超时 · ${dt}s" ;;
             5??) R warn "GET /models" "HTTP $me · 服务端错误 · ${dt}s" ;;
             *) R warn "GET /models" "HTTP $me · ${dt}s" ;;
@@ -184,11 +201,33 @@ enum NanoMuseEnvProbe {
     }
 
     /// 运行时清单：优先用真实 manifest，失败时退回固定表
+    /// Alpine 侧是否有同名命令行工具。注意：这和 App 管理的运行时包不是同一个东西，
+    /// 只是名字撞车（例如 apk 的 python3 3.12 vs 运行时 Python 3.13）。
+    static func alpineCLIs() async -> [String: String] {
+        let script = """
+        chk() { id=$1; c=$2; shift 2; if command -v "$c" >/dev/null 2>&1; then v=$("$c" "$@" 2>&1 | head -1); echo "$id|$c|$v"; fi; }
+        chk python python3 --version
+        chk node node --version
+        chk core_tools git --version
+        chk build_tools cc --version
+        chk reverse_tools rabin2 -v
+        """
+        let (_, out) = await NanoMuseCodex.runCommand(script, timeout: 30)
+        var map: [String: String] = [:]
+        for line in out.split(separator: "\n") {
+            let parts = line.split(separator: "|").map(String.init)
+            guard parts.count >= 3 else { continue }
+            map[parts[0]] = "\(parts[1]) \(parts[2])".trimmingCharacters(in: .whitespaces)
+        }
+        return map
+    }
+
     static func runtimeSection() async -> NanoMuseEnvSection {
         var rows: [NanoMuseEnvRow] = []
         // 两套安装位置都要看：App 自身目录（原生，优先）与 Alpine 侧。
         // 之前只问 Alpine 的 /opt/runtimes，导致 App 自己装好的运行时被显示成「未安装」。
         let nativeIDs = Set(NanoMuseNativeRuntime.installedIDs())
+        let alpineCLI = await alpineCLIs()
         var manifestIDs = Set<String>()
         do {
             let manifest = try await NanoMuseRuntimeManifest.fetch()
@@ -199,10 +238,16 @@ enum NanoMuseEnvProbe {
                 let onNative = nativeIDs.contains(p.id)
                 let onAlpine = !onNative && (status[p.id] ?? false)
                 let source = onNative ? "原生 · App 目录" : (onAlpine ? "Alpine 侧" : "")
+                let detail: String
+                if onNative || onAlpine {
+                    detail = "已安装 · \(source) · \(p.sizeText)"
+                } else if let cli = alpineCLI[p.id] {
+                    detail = "未安装 · Alpine 侧另有 \(cli)（不是同一个包）"
+                } else {
+                    detail = "未安装 · \(p.sizeText)"
+                }
                 rows.append(NanoMuseEnvRow(status: (onNative || onAlpine) ? .ok : .skip,
-                                           title: p.displayName,
-                                           detail: (onNative || onAlpine) ? "已安装 · \(source) · \(p.sizeText)"
-                                                                          : "未安装 · \(p.sizeText)"))
+                                           title: p.displayName, detail: detail))
             }
         } catch {
             rows.append(NanoMuseEnvRow(status: .warn, title: "运行时清单", detail: "拉取失败：\(error.localizedDescription)"))
@@ -217,7 +262,7 @@ enum NanoMuseEnvProbe {
         rows.append(NanoMuseEnvRow(status: .info, title: "安装位置",
                                    detail: NanoMuseNativeRuntime.rootDirectory.path))
         return NanoMuseEnvSection(id: "runtime", title: "运行时",
-                                  note: "优先 App 自身目录（原生），其次 Alpine 侧；不借用其它 App",
+                                  note: "App 管理的运行时包（原生目录优先，其次 Alpine）。「工具管理」里列的是 Alpine 里 apk 装的命令，同名不同物",
                                   optional: false, rows: rows)
     }
 

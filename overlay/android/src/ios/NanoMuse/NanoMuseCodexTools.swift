@@ -141,6 +141,8 @@ enum NanoMuseTools {
         let (_, output) = await NanoMuseCodex.runCommand("\(spec.checkCommand) 2>/dev/null || true", timeout: 60)
         let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        return text.split(separator: "\n").first.map(String.init)
+        let first = text.split(separator: "\n").first.map(String.init) ?? text
+        // 这一页除 Codex 外都跑在 Alpine 里，标明来源，避免和「环境检测 → 运行时」同名混淆
+        return "Alpine · " + first
     }
 }
