@@ -120,6 +120,72 @@ enum NanoMuseNativeRuntime {
         return true
     }
 
+    /// 已安装目录在磁盘上的真实占用（字节）。用于把「包多大」和「展开多大」分开显示。
+    static func sizeOnDisk(_ url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return 0 }
+        var total: Int64 = 0
+        if let e = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                                 options: [.skipsHiddenFiles]) {
+            for case let f as URL in e {
+                let v = try? f.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                if v?.isRegularFile == true { total += Int64(v?.fileSize ?? 0) }
+            }
+        }
+        return total
+    }
+
+    /// root 目录里存在、但清单里已经没有的运行时（旧的 cl16 之类）——
+    /// 这些正是「卸载不掉的残留」，单独列出来让用户能删。
+    static func orphanDirectories(known: Set<String>) -> [(name: String, bytes: Int64)] {
+        let fm = FileManager.default
+        let root = rootDirectory
+        guard let items = try? fm.contentsOfDirectory(at: root,
+                                                     includingPropertiesForKeys: [.isDirectoryKey],
+                                                     options: [.skipsHiddenFiles]) else { return [] }
+        return items.compactMap { url -> (String, Int64)? in
+            guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { return nil }
+            let name = url.lastPathComponent
+            guard !known.contains(name), !name.hasPrefix(".") else { return nil }
+            return (name, sizeOnDisk(url))
+        }
+        .sorted { $0.0 < $1.0 }
+    }
+
+    /// 安装后自检：真的把 bin 里的第一个 Mach-O 跑一遍 `--version`。
+    /// 这一步能暴露「解开但签不出来 / 被 AMFI 杀掉」的情况，避免装完才发现不能用。
+    static func selfTest(_ id: String, log: Log) async -> Bool {
+        let fm = FileManager.default
+        let dir = directory(for: id)
+        let bin = dir.appendingPathComponent("bin", isDirectory: true)
+        var candidates: [URL] = []
+        if let items = try? fm.contentsOfDirectory(at: bin, includingPropertiesForKeys: nil) {
+            for f in items.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                if (try? f.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                    candidates.append(f)
+                }
+            }
+        }
+        guard let probe = candidates.first else {
+            await log.add("  自检：没有可执行文件可试跑（包内可能只有库/脚本）")
+            return true
+        }
+        let result = await Task.detached(priority: .userInitiated) {
+            NanoMuseHelperRunner.run(probe.path, arguments: ["--version"], timeout: 60)
+        }.value
+        let firstLine = result.output.split(separator: "\n").first.map(String.init) ?? ""
+        if result.exitCode == 0 {
+            await log.add("  自检通过：\(probe.lastPathComponent) → \(firstLine)")
+            return true
+        }
+        await log.add("  自检失败：\(probe.lastPathComponent) 退出码 \(result.exitCode)")
+        if result.exitCode == 137 || result.exitCode == 126 || result.exitCode == 132 {
+            await log.add("  系统拒绝执行（签名/AMFI）。二进制已解包在：\(dir.path)/bin")
+            await log.add("  可继续使用其中的脚本、配置文件；可执行文件需要重签名后才能跑。")
+        }
+        return false
+    }
+
     // MARK: - 安装主流程
 
     static func install(_ package: NanoMuseRuntimeManifest.Package,
@@ -262,6 +328,10 @@ enum NanoMuseNativeRuntime {
         }
 
         try? Data("\(package.sha256)\n".utf8).write(to: marker)
+        if package.id != "codex" {
+            await log.add("STEP 6/6 安装后自检")
+            _ = await selfTest(package.id, log: log)
+        }
         await log.add("STEP done")
         await log.setPhase("完成")
         await log.setProgress(1)
@@ -633,32 +703,40 @@ enum NanoMuseNativeRuntime {
     }
 
     /// 解包分流：
-    ///   · `.tar.gz` → 随包 ca-filetool（原生 Mach-O，含 tar）
+    ///   · `.tar.gz` / `.deb`(gz 载荷) → 随包 Helpers/tarx（原生 Mach-O 解包器）
     ///   · `.tar.zst` / `.tar.xz` → 交给 Alpine（apk 提供 zstd/xz），
     ///     这样解出来的 Mach-O 才能被 posix_spawn 执行。
+    ///
+    /// ⚠️ 以前这里调的是 `ca-filetool tar xzf`，但 ca-filetool 只有
+    /// ls/cat/grep/head/tail/xxd/ln/chmod/du/find/which 这些子命令，**根本没有 tar**，
+    /// 于是每次都「tar 退出码 1」，安装流程必然失败。Helpers/tarx 才是随包的真解包器。
     private static func extract(payload: URL, into destination: URL, log: Log) async -> Bool {
         let name = payload.lastPathComponent.lowercased()
         if name.hasSuffix(".zst") || name.hasSuffix(".xz") {
             return await extractViaAlpine(payload: payload, into: destination, log: log)
         }
 
-        guard NanoMuseHelperRunner.exists("ca-filetool") else {
-            await log.add("  缺少 ca-filetool，无法解包")
-            return false
+        try? FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        if NanoMuseHelperRunner.exists("tarx") {
+            // 几百 MB 的包，放后台线程，别占主线程
+            let result = await Task.detached(priority: .userInitiated) {
+                NanoMuseHelperRunner.run(
+                    "tarx",
+                    arguments: ["-xf", payload.path, "-C", destination.path],
+                    timeout: 900
+                )
+            }.value
+            await log.add("  tarx 退出码：\(result.exitCode)")
+            for line in result.output.split(separator: "\n").suffix(3) {
+                await log.add("  \(line)")
+            }
+            if result.exitCode == 0 { return true }
+            await log.add("  tarx 失败，回退到 Alpine 解包")
+        } else {
+            await log.add("  未随包 tarx，回退到 Alpine 解包")
         }
-        // tar 可能是几百 MB 的活，放后台线程，别占主线程
-        let result = await Task.detached(priority: .userInitiated) {
-            NanoMuseHelperRunner.run(
-                "ca-filetool",
-                arguments: ["tar", "xzf", payload.path, "-C", destination.path],
-                timeout: 900
-            )
-        }.value
-        await log.add("  tar 退出码：\(result.exitCode)")
-        for line in result.output.split(separator: "\n").suffix(3) {
-            await log.add("  \(line)")
-        }
-        return result.exitCode == 0
+        return await extractViaAlpine(payload: payload, into: destination, log: log)
     }
 
     /// 借 Alpine 解 zstd/xz：**直接读写 iSH 的 rootfs 目录**（`RootfsManager.shared.dataPath`，

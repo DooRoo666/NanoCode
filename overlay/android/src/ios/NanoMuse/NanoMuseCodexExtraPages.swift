@@ -73,6 +73,10 @@ struct NanoMuseRuntimePage: View {
     @State private var manifestError: String?
     @State private var runningID: String?
     @State private var logLines: [String] = []
+    @State private var sizes: [String: String] = [:]
+    @State private var orphans: [(name: String, bytes: Int64)] = []
+    @State private var confirmingUninstall: NanoMuseRuntimeManifest.Package?
+    @State private var pendingOrphan: String?
     @StateObject private var nativeLog = NanoMuseNativeRuntime.Log()
 
     var body: some View {
@@ -114,13 +118,39 @@ struct NanoMuseRuntimePage: View {
                         .padding(.horizontal, 16).padding(.bottom, 10)
                 }
             }
-            NanoMuseCaption(text: "与 MT-Agent 同一份清单。原生包是 iOS 产物（codex 是 iphoneos-arm64.deb），装到 App 容器；Alpine 包才是 Linux 工具。")
+            NanoMuseCaption(text: "宿主包是 iOS Mach-O（App 容器内，给 Codex/工具调用）；Alpine 包是 Linux ELF（iSH rootfs，给终端用）。两者互不覆盖，卸载也各删各的。")
 
             if !packages.isEmpty {
                 NanoMuseCard {
                     ForEach(Array(packages.enumerated()), id: \.element.id) { index, package in
                         if index > 0 { NanoMuseRowDivider() }
                         packageRow(package)
+                    }
+                }
+            }
+
+            if !orphans.isEmpty {
+                NanoMuseCaption(text: mode == .native
+                                ? "清单外 · 宿主里多出来的目录（源码编译残留等），可直接删"
+                                : "清单外 · Alpine /opt/runtimes 里的多余目录，可直接删")
+                NanoMuseCard {
+                    ForEach(Array(orphans.enumerated()), id: \.offset) { index, item in
+                        if index > 0 { NanoMuseRowDivider() }
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name).font(.body)
+                                Text("\(mode == .native ? "宿主" : "Alpine") · \(Self.bytesText(item.bytes))")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                            Button(role: .destructive) {
+                                pendingOrphan = item.name
+                            } label: {
+                                Text("删除").font(.footnote.weight(.semibold)).foregroundStyle(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 10)
                     }
                 }
             }
@@ -152,14 +182,44 @@ struct NanoMuseRuntimePage: View {
             }
         }
         .task { await load() }
+        .alert("卸载 \(confirmingUninstall?.displayName ?? "")？",
+               isPresented: Binding(get: { confirmingUninstall != nil },
+                                    set: { if !$0 { confirmingUninstall = nil } })) {
+            Button("取消", role: .cancel) { confirmingUninstall = nil }
+            Button("卸载", role: .destructive) {
+                guard let package = confirmingUninstall else { return }
+                confirmingUninstall = nil
+                Task { await uninstall(package) }
+            }
+        } message: {
+            Text(mode == .native
+                 ? "会删除宿主目录 runtimes/\(confirmingUninstall?.id ?? "")，Codex 将不再能用这个运行时。"
+                 : "会删除 Alpine 的 /opt/runtimes/\(confirmingUninstall?.id ?? "") 并从 PATH 里摘掉。")
+        }
+        .alert("删除 \(pendingOrphan ?? "")？",
+               isPresented: Binding(get: { pendingOrphan != nil },
+                                    set: { if !$0 { pendingOrphan = nil } })) {
+            Button("取消", role: .cancel) { pendingOrphan = nil }
+            Button("删除", role: .destructive) {
+                guard let name = pendingOrphan else { return }
+                pendingOrphan = nil
+                Task { await deleteOrphan(name) }
+            }
+        } message: {
+            Text("这个目录不在清单里，删除后无法从清单重装。")
+        }
     }
 
     private func packageRow(_ package: NanoMuseRuntimeManifest.Package) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(package.displayName).font(.body).foregroundStyle(.primary)
+                Text(locationText(package)).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
                 Text("\(package.group) · \(package.sizeText) · \(package.capabilities.prefix(2).joined(separator: ", "))")
                     .font(.footnote).foregroundStyle(.secondary).lineLimit(2)
+                if installed[package.id] == true, let actual = sizes[package.id] {
+                    Text("已展开 \(actual)").font(.caption2).foregroundStyle(NanoMuseTones.action)
+                }
                 if let ios = package.minimumIOS {
                     Text("最低 iOS \(ios)").font(.caption2).foregroundStyle(.tertiary)
                 }
@@ -168,21 +228,14 @@ struct NanoMuseRuntimePage: View {
             if runningID == package.id {
                 ProgressView().controlSize(.small)
             } else if installed[package.id] == true {
-                Menu {
-                    Button("卸载", role: .destructive) {
-                        Task {
-                            do {
-                                _ = try NanoMuseNativeRuntime.uninstall(package.id)
-                                manifestError = nil
-                            } catch {
-                                manifestError = error.localizedDescription
-                            }
-                            await load()
-                        }
-                    }
+                Button(role: .destructive) {
+                    confirmingUninstall = package
                 } label: {
-                    Text("已安装").font(.footnote).foregroundStyle(NanoMuseTones.action)
+                    Text("卸载").font(.footnote.weight(.semibold)).foregroundStyle(.red)
                 }
+                .buttonStyle(.plain)
+            } else if runningID != nil {
+                Text("等待中").font(.footnote).foregroundStyle(.tertiary)
             } else {
                 Button {
                     Task { await install(package) }
@@ -190,11 +243,26 @@ struct NanoMuseRuntimePage: View {
                     Text("安装").font(.subheadline.weight(.semibold)).foregroundStyle(NanoMuseTones.action)
                 }
                 .buttonStyle(.plain)
-                .disabled(runningID != nil)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    /// 明确写出这个包到底会装到哪一侧，别让人分不清宿主和 Alpine
+    private func locationText(_ package: NanoMuseRuntimeManifest.Package) -> String {
+        switch mode {
+        case .native:
+            return "宿主 · ~/Library/Application Support/NanoCodex/runtimes/\(package.id)"
+        case .alpine:
+            return "Alpine · /opt/runtimes/\(package.id)"
+        }
+    }
+
+    private static func bytesText(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: max(0, bytes))
     }
 
     private func load() async {
@@ -215,14 +283,93 @@ struct NanoMuseRuntimePage: View {
                 state = NanoMuseRuntimeManifest.parseStatus(output)
             }
             installed = state
+            await refreshSizes(packages: manifest.packages, state: state)
         } catch {
             manifestError = error.localizedDescription
         }
     }
 
+    /// 统计「已展开」体积 + 扫出清单外的残留目录
+    private func refreshSizes(packages: [NanoMuseRuntimeManifest.Package], state: [String: Bool]) async {
+        var sizeMap: [String: String] = [:]
+        var extra: [(String, Int64)] = []
+        switch mode {
+        case .native:
+            for package in packages where state[package.id] == true {
+                let bytes = NanoMuseNativeRuntime.sizeOnDisk(NanoMuseNativeRuntime.directory(for: package.id))
+                if bytes > 0 { sizeMap[package.id] = Self.bytesText(bytes) }
+            }
+            extra = NanoMuseNativeRuntime.orphanDirectories(known: Set(packages.map(\.id)))
+        case .alpine:
+            for package in packages where state[package.id] == true {
+                let (_, output) = await NanoMuseCodex.runCommand(NanoMuseRuntimeManifest.sizeScript(package.id), timeout: 30)
+                let kb = Int64(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                if kb > 0 { sizeMap[package.id] = Self.bytesText(kb * 1024) }
+            }
+            let (_, listing) = await NanoMuseCodex.runCommand("ls -1 /opt/runtimes 2>/dev/null", timeout: 30)
+            let known = Set(packages.map(\.id))
+            let names = listing.split(separator: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty && !known.contains($0) }
+            for name in names {
+                let (_, output) = await NanoMuseCodex.runCommand(NanoMuseRuntimeManifest.sizeScript(name), timeout: 30)
+                let kb = Int64(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                extra.append((name, kb * 1024))
+            }
+        }
+        sizes = sizeMap
+        orphans = extra.sorted { $0.0 < $1.0 }
+    }
+
+    /// 卸载：宿主侧删 App 容器目录，Alpine 侧删 /opt/runtimes 并摘 PATH
+    private func uninstall(_ package: NanoMuseRuntimeManifest.Package) async {
+        runningID = package.id
+        logLines.removeAll()
+        switch mode {
+        case .native:
+            nativeLog.clear()
+            do {
+                let removed = try NanoMuseNativeRuntime.uninstall(package.id)
+                await MainActor.run {
+                    nativeLog.add(removed ? "卸载完成：\(package.displayName)" : "目录本来就已不存在")
+                }
+            } catch {
+                await MainActor.run { nativeLog.add("ERR 卸载失败：\(error.localizedDescription)") }
+            }
+        case .alpine:
+            append("卸载 \(package.displayName) → /opt/runtimes/\(package.id)")
+            let ok = await NanoMuseCodex.runStreamingAwait(NanoMuseRuntimeManifest.uninstallScript(package.id), timeout: 600)
+            append(ok ? "Alpine 卸载完成" : "ERR Alpine 卸载未成功，请看上面的输出")
+        }
+        runningID = nil
+        await load()
+    }
+
+    /// 删清单外的残留目录（宿主用 FileManager，删不掉就交给 ca-filetool rm -rf）
+    private func deleteOrphan(_ name: String) async {
+        logLines.removeAll()
+        switch mode {
+        case .native:
+            let url = NanoMuseNativeRuntime.rootDirectory.appendingPathComponent(name, isDirectory: true)
+            try? FileManager.default.removeItem(at: url)
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = NanoMuseHelperRunner.run("ca-filetool", arguments: ["rm", "-rf", url.path], timeout: 300)
+            }
+            let gone = !FileManager.default.fileExists(atPath: url.path)
+            append(gone ? "已删除 \(name)" : "ERR 删除失败：\(url.path)")
+        case .alpine:
+            let (_, output) = await NanoMuseCodex.runCommand(
+                "rm -rf /opt/runtimes/\(name); [ -d /opt/runtimes/\(name) ] && echo LEFTOVER || echo done",
+                timeout: 300)
+            append("删除 \(name)：\(output.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        await load()
+    }
+
     private func install(_ package: NanoMuseRuntimeManifest.Package) async {
         runningID = package.id
         logLines.removeAll()
+        manifestError = nil
 
         switch mode {
         case .native:
@@ -237,6 +384,10 @@ struct NanoMuseRuntimePage: View {
 
         runningID = nil
         await load()
+        // 装完立刻复核：状态还是「未安装」就说明某一步没落地，直接标红
+        if installed[package.id] != true {
+            manifestError = "\(package.displayName) 安装后仍显示未安装，请看上面的日志"
+        }
     }
 
     private func append(_ line: String) {

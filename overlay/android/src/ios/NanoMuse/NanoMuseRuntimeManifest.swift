@@ -163,15 +163,20 @@ enum NanoMuseRuntimeManifest {
 
         echo "STEP 5/5 写入 PATH 并探测"
         PATHS="/etc/profile.d/nanocodex-paths.list"
-        : > "$PATHS"
+        touch "$PATHS"
+        # 只替换本包自己的行，别把别的运行时写的 PATH 一起清掉
+        if [ -f "$PATHS" ]; then
+          grep -v "^/opt/runtimes/$ID/" "$PATHS" > "$PATHS.new" 2>/dev/null || true
+          mv "$PATHS.new" "$PATHS"
+        fi
         __PATH_LINES__
         {
           echo "# 由 nanoCode 运行时安装器维护"
           echo 'export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"'
           if [ -f "$PATHS" ]; then
-            while read -r p; do
-              [ -n "$p" ] && echo "export PATH=\"\$PATH:$p\""
-            done < "$PATHS"
+            sort -u "$PATHS" | while read -r p; do
+              [ -n "$p" ] && [ -d "$p" ] && echo "export PATH=\"\$PATH:$p\""
+            done
           fi
         } > /etc/profile.d/nanocodex-runtimes.sh
         chmod 0644 /etc/profile.d/nanocodex-runtimes.sh
@@ -201,6 +206,49 @@ enum NanoMuseRuntimeManifest {
     }
 
     // MARK: - 状态查询脚本
+
+    /// Alpine 侧卸载脚本：删目录 + 摘 PATH 行 + 重建 profile，最后校验目录真的没了。
+    /// 之前 Alpine 模式点「卸载」走的是宿主侧 API，什么都不删，所以「删不掉」。
+    static func uninstallScript(_ id: String) -> String {
+        return #"""
+        set -u
+        ID="\#(id)"
+        DEST="/opt/runtimes/$ID"
+        PATHS="/etc/profile.d/nanocodex-paths.list"
+        echo "STEP 1/3 删除 $DEST"
+        if [ -d "$DEST" ]; then
+          KB=$(du -sk "$DEST" 2>/dev/null | cut -f1)
+          rm -rf "$DEST" || { echo "ERR 删除失败（目录可能被占用或权限不足）"; exit 2; }
+          echo "  已删除，释放 ${KB:-0} KB"
+        else
+          echo "  目录本来就不存在"
+        fi
+        echo "STEP 2/3 清理 PATH 片段"
+        if [ -f "$PATHS" ]; then
+          grep -v "^/opt/runtimes/$ID/" "$PATHS" > "$PATHS.new" 2>/dev/null || true
+          mv "$PATHS.new" "$PATHS"
+          echo "  已移除本包的 PATH 行"
+        fi
+        echo "STEP 3/3 重建 profile"
+        {
+          echo "# 由 nanoCode 运行时安装器维护"
+          echo 'export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"'
+          if [ -f "$PATHS" ]; then
+            sort -u "$PATHS" | while read -r p; do
+              [ -n "$p" ] && [ -d "$p" ] && echo "export PATH=\"\$PATH:$p\""
+            done
+          fi
+        } > /etc/profile.d/nanocodex-runtimes.sh
+        chmod 0644 /etc/profile.d/nanocodex-runtimes.sh
+        if [ -d "$DEST" ]; then echo "ERR 目录仍然存在"; exit 3; fi
+        echo "STEP done"
+        """#
+    }
+
+    /// Alpine 侧已装体积（KB），拿不到时返回 0
+    static func sizeScript(_ id: String) -> String {
+        "du -sk /opt/runtimes/\(id) 2>/dev/null | cut -f1 || echo 0"
+    }
 
     static func statusScript(_ ids: [String]) -> String {
         let checks = ids.map { id in
