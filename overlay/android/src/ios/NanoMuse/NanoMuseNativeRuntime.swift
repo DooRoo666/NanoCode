@@ -145,7 +145,95 @@ enum NanoMuseNativeRuntime {
 
     static func installedIDs() -> [String] {
         let contents = (try? FileManager.default.contentsOfDirectory(atPath: rootDirectory.path)) ?? []
-        return contents.filter { isInstalled($0) }
+        let ids = contents.filter { isInstalled($0) }
+        if ids.contains("python") {
+            healPythonSupportIfNeeded()
+        }
+        return ids
+    }
+
+    // MARK: - Python 运行时的支撑文件（sitecustomize / CA 证书 / pip）
+
+    /// iOS 版 CPython 有三个开箱即坏的点，实测全部可以在 site-packages 里补掉：
+    /// 1. `subprocess` / `os.fork` 在该 build 被编译成直接 ENOTSUP —— 用 posix_spawn 顶替
+    ///    （父进程不 fork，只是在子进程里 exec，TrollStore 环境允许）；
+    /// 2. 没有任何系统 CA 证书，`urllib` 一访问 https 就 CERTIFICATE_VERIFY_FAILED —— 随包
+    ///    的 cacert.pem 落到 site-packages 并由补丁自动设 SSL_CERT_FILE；
+    /// 3. `platform.uname()` 要走 objc 桥，DeviceKit 返回 nil 就抛异常，pip / setuptools
+    ///    一调就崩 —— 固定成 Darwin/arm64。
+    /// 补完之后 pip、requests 这类纯 Python 包都能正常用。
+    private static func pythonSitePackages(in dir: URL) -> [URL] {
+        var found: [URL] = []
+        let fm = FileManager.default
+        guard let e = fm.enumerator(atPath: dir.path) else { return [] }
+        for case let rel as String in e {
+            if rel.hasSuffix("site-packages") {
+                found.append(dir.appendingPathComponent(rel))
+            }
+        }
+        return found
+    }
+
+    @MainActor
+    static func installPythonSupport(destination: URL, log: Log?) async {
+        let fm = FileManager.default
+        let sites = pythonSitePackages(in: destination)
+        guard let site = sites.first else { return }
+        let bundle = Bundle.main.bundlePath
+        let scSrc = bundle + "/python-support/sitecustomize.py"
+        let caSrc = bundle + "/cacert.pem"
+
+        var didCopy = false
+        for s in sites {
+            if fm.fileExists(atPath: scSrc) {
+                let dst = s.appendingPathComponent("sitecustomize.py")
+                try? fm.removeItem(at: dst)
+                if (try? fm.copyItem(atPath: scSrc, toPath: dst.path)) != nil { didCopy = true }
+            }
+            if fm.fileExists(atPath: caSrc) {
+                let dst = s.appendingPathComponent("cacert.pem")
+                if !fm.fileExists(atPath: dst.path) {
+                    _ = try? fm.copyItem(atPath: caSrc, toPath: dst.path)
+                }
+            }
+        }
+        if didCopy, let log {
+            await log.add("  已铺 python 支撑文件（sitecustomize + CA）→ \(site.lastPathComponent)")
+        }
+
+        // pip：随包带 get-pip.py，site-packages 里没有 pip 时装一次（纯 Python，无需编译）
+        let gp = bundle + "/python-support/get-pip.py"
+        let python = destination.appendingPathComponent("python3").path
+        guard fm.fileExists(atPath: gp), fm.fileExists(atPath: python) else { return }
+        guard !fm.fileExists(atPath: site.appendingPathComponent("pip").path) else { return }
+        if let log { await log.add("  安装 pip（随包离线引导）…") }
+        let ca = site.appendingPathComponent("cacert.pem").path
+        let r = await Task.detached(priority: .userInitiated) {
+            NanoMuseHelperRunner.run(python,
+                                     arguments: [gp, "--no-warn-script-location", "--disable-pip-version-check"],
+                                     timeout: 900,
+                                     extraEnvironment: ["SSL_CERT_FILE": ca])
+        }.value
+        if let log {
+            let tail = r.output.split(separator: "\n").suffix(3).joined(separator: " / ")
+            await log.add(r.exitCode == 0 ? "  pip 就绪：\(tail)" : "  pip 安装失败（\(r.exitCode)）：\(tail)")
+        }
+    }
+
+    /// 已经装过 python 的老用户：进一次运行时列表就把支撑文件补上，不需要重装。
+    private static func healPythonSupportIfNeeded() {
+        let dir = directory(for: "python")
+        let marker = dir.appendingPathComponent(".python-support-v1")
+        guard !FileManager.default.fileExists(atPath: marker.path) else { return }
+        guard let site = pythonSitePackages(in: dir).first else { return }
+        guard !FileManager.default.fileExists(atPath: site.appendingPathComponent("sitecustomize.py").path) else {
+            FileManager.default.createFile(atPath: marker.path, contents: Data())
+            return
+        }
+        Task.detached(priority: .utility) {
+            await NanoMuseNativeRuntime.installPythonSupport(destination: dir, log: nil)
+            FileManager.default.createFile(atPath: marker.path, contents: Data())
+        }
     }
 
     enum UninstallError: LocalizedError {
@@ -395,7 +483,11 @@ enum NanoMuseNativeRuntime {
 
         try? Data("\(package.sha256)\n".utf8).write(to: marker)
         if package.id != "codex" {
-            await log.add("STEP 6/6 安装后自检")
+            if package.id == "python" {
+                await log.add("STEP 6/7 铺 python 支撑文件（subprocess / CA / pip）")
+                await installPythonSupport(destination: destination, log: log)
+            }
+            await log.add("STEP 7/7 安装后自检")
             _ = await selfTest(package.id, log: log)
         }
         await log.add("STEP done")
