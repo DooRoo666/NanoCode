@@ -21,6 +21,8 @@ struct NanoMuseCodexView: View {
     @State private var codexStatus: NanoMuseCodex.Status?
     @State private var toolStatus: [String: String] = [:]
     @State private var runningTool: String?
+    @State private var runningRuntime: String?
+    @State private var runtimeNote: [String: String] = [:]
     @State private var phaseText = ""
     @State private var progress: Double?
     @State private var logLines: [String] = []
@@ -169,6 +171,7 @@ struct NanoMuseCodexView: View {
             if source == .custom { customCredentialCard }
             modelCard
         case .codex:
+            NanoMuseCodexEnvPickerCard()
             statusCard
             NanoMuseCaption(text: codexDetailText)
             if !displayLines.isEmpty { logCard }
@@ -188,7 +191,7 @@ struct NanoMuseCodexView: View {
             if !output.isEmpty { outputCard }
             if !displayLines.isEmpty { logCard }
         case .envcheck:
-            NanoMuseEnvCheckView()
+            NanoMuseScopedEnvCheckView()
         }
     }
 
@@ -341,14 +344,33 @@ struct NanoMuseCodexView: View {
 
     private var toolsCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            groupHeader("宿主（App 运行时目录）")
+            groupHeader("宿主（App 内置运行时）")
             NanoMuseCard {
-                ForEach(Array(NanoMuseTools.hostTools.enumerated()), id: \.element.id) { index, spec in
+                ForEach(Array(NanoMuseHostRuntimes.entries().enumerated()), id: \.element.id) { index, entry in
                     if index > 0 { NanoMuseRowDivider() }
-                    toolRow(spec)
+                    hostRuntimeRow(entry)
                 }
             }
-            Text("跟着 Codex 本体走，装在 App 自己的 runtimes 目录里。")
+            NavigationLink {
+                NanoMuseRuntimePage()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.footnote)
+                    Text("安装 / 更新宿主运行时")
+                        .font(.footnote.weight(.medium))
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(NanoMuseTones.action)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(NanoMuseTones.surface))
+            }
+            .buttonStyle(.plain)
+            Text("Mach-O 运行时，装在 App 包里、用本 App 的签名执行；iSH 侧看不到这些命令。")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 4)
@@ -365,6 +387,71 @@ struct NanoMuseCodexView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 4)
+        }
+    }
+
+    private func hostRuntimeRow(_ entry: NanoMuseHostRuntimeEntry) -> some View {
+        let busyRow = runningRuntime == entry.id
+        let note = runtimeNote[entry.id]
+        let subtitle: String = {
+            if let note { return note }
+            if entry.installed {
+                let versionText = entry.version ?? ""
+                let ver = versionText.isEmpty ? "" : " · \(versionText)"
+                return "已安装\(ver) · \(entry.hint)"
+            }
+            return "未安装 · \(entry.hint)"
+        }()
+        return HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(entry.title)
+                    .font(.body)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            if busyRow {
+                ProgressView()
+                    .controlSize(.small)
+            } else if entry.installed {
+                Button {
+                    uninstallRuntime(entry)
+                } label: {
+                    Text("卸载")
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+            } else {
+                NavigationLink {
+                    NanoMuseRuntimePage()
+                } label: {
+                    Text("安装")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(NanoMuseTones.action)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+    }
+
+    private func uninstallRuntime(_ entry: NanoMuseHostRuntimeEntry) {
+        guard runningRuntime == nil else { return }
+        runningRuntime = entry.id
+        runtimeNote[entry.id] = "正在删除…"
+        Task {
+            let ok = (try? NanoMuseNativeRuntime.uninstall(entry.id)) ?? false
+            await MainActor.run {
+                runtimeNote[entry.id] = ok ? "已卸载" : "卸载失败"
+                runningRuntime = nil
+            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await MainActor.run { runtimeNote[entry.id] = nil }
         }
     }
 

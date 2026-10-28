@@ -129,6 +129,33 @@ struct NanoMuseRuntimePage: View {
                 }
             }
 
+            let displayLines = mode == .native ? nativeLog.lines : logLines
+            if !displayLines.isEmpty {
+                NanoMuseCaption(text: "安装进度 · \(mode == .native ? "宿主" : "Alpine")")
+                NanoMuseCard {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(Array(displayLines.enumerated()), id: \.offset) { index, line in
+                                    Text(line)
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(line.hasPrefix("ERR") ? .red : .secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .id(index)
+                                }
+                            }
+                            .padding(12)
+                        }
+                        .frame(maxHeight: 240)
+                        .onChange(of: displayLines.count) { _ in
+                            if let last = displayLines.indices.last {
+                                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
+                            }
+                        }
+                    }
+                }
+            }
+
             if !orphans.isEmpty {
                 NanoMuseCaption(text: mode == .native
                                 ? "清单外 · 宿主里多出来的目录（源码编译残留等），可直接删"
@@ -155,31 +182,6 @@ struct NanoMuseRuntimePage: View {
                 }
             }
 
-            let displayLines = mode == .native ? nativeLog.lines : logLines
-            if !displayLines.isEmpty {
-                NanoMuseCard {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(Array(displayLines.enumerated()), id: \.offset) { index, line in
-                                    Text(line)
-                                        .font(.caption2.monospaced())
-                                        .foregroundStyle(line.hasPrefix("ERR") ? .red : .secondary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .id(index)
-                                }
-                            }
-                            .padding(12)
-                        }
-                        .frame(maxHeight: 240)
-                        .onChange(of: displayLines.count) { _ in
-                            if let last = displayLines.indices.last {
-                                withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(last, anchor: .bottom) }
-                            }
-                        }
-                    }
-                }
-            }
         }
         .task { await load() }
         .alert("卸载 \(confirmingUninstall?.displayName ?? "")？",
