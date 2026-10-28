@@ -24,11 +24,7 @@
 	<array>
 		<string>group.io.github.nanomuse.app</string>
 	</array>
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
 	<key>com.apple.springboard.debugapplications</key>
-	<true/>
-	<key>dynamic-codesigning</key>
 	<true/>
 	<key>get-task-allow</key>
 	<true/>
