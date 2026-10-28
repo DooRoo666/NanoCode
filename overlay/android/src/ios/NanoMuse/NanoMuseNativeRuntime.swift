@@ -119,14 +119,7 @@ enum NanoMuseNativeRuntime {
 
     /// 完整解释：为什么没进包内、怎么改回包内。放卡片下方，可换行。
     static var rootLocationNote: String {
-        if rootIsBundled {
-            return "运行时装在 App 包内 Runtimes/，与 MT-Agent 一致，dylib 不会被沙箱拦。"
-        }
-        let attrs = try? FileManager.default.attributesOfItem(atPath: Bundle.main.bundlePath)
-        let owner = (attrs?[.ownerAccountName] as? String) ?? "?"
-        let mode = (attrs?[.posixPermissions] as? NSNumber)?.intValue ?? 0
-        let path = (rootDirectory.path as NSString).abbreviatingWithTildeInPath
-        return String(format: "App 包不可写（属主 %@ / 0%o），运行时只能落在 %@。包外的 dylib 会被 iOS 拦（sandbox blocked mmap / code signature invalid），所以 Python 这类带 framework 的运行时装完也跑不起来。用 TrollStore 重装本 App（让包体归 mobile 所有）就能改回包内。", owner, mode, path)
+        rootIsBundled ? "包内 Runtimes/" : "App 容器（包不可写）"
     }
 
     static func directory(for id: String) -> URL {
