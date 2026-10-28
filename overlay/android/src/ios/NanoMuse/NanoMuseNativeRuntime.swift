@@ -53,7 +53,7 @@ enum NanoMuseNativeRuntime {
     static var rootDirectory: URL {
         let bundled = URL(fileURLWithPath: Bundle.main.bundlePath)
             .appendingPathComponent("Runtimes", isDirectory: true)
-        if NanoMuseStorage.canWrite(bundled.path) {
+        if probeWritable(bundled) {
             return bundled
         }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -61,6 +61,21 @@ enum NanoMuseNativeRuntime {
         let dir = base.appendingPathComponent("NanoCodex/runtimes", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// **真写一次**再判定。不能用 `isWritableFile`：
+    /// 包里目录是 33:33/755，POSIX 判定必然 false，但 App 的
+    /// `com.apple.private.security.storage.AppBundles` 沙盒扩展允许它真的写进去
+    /// （MT-Agent 的 PythonRuntime/TheosRuntime 就是这么以 501 属主建出来的）。
+    private static func probeWritable(_ dir: URL) -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let probe = dir.appendingPathComponent(".write-probe")
+        guard (try? Data(UUID().uuidString.utf8).write(to: probe, options: .atomic)) != nil else {
+            return false
+        }
+        try? fm.removeItem(at: probe)
+        return true
     }
 
     static func directory(for id: String) -> URL {
@@ -877,6 +892,19 @@ enum NanoMuseNativeRuntime {
             || magic == [0xCA, 0xFE, 0xBA, 0xBE]
     }
 
+    /// 读 Mach-O filetype：2 = MH_EXECUTE，6 = MH_DYLIB，8 = MH_BUNDLE；
+    /// fat 容器/读不出时返回 nil（按可执行文件处理，保持旧行为）。
+    private static func machOFileType(_ url: URL) -> UInt32? {
+        guard let handle = try? FileHandle(forReadingFrom: url),
+              let head = try? handle.read(upToCount: 16), head.count == 16 else { return nil }
+        try? handle.close()
+        let b = [UInt8](head)
+        if b.prefix(4) == [0xCA, 0xFE, 0xBA, 0xBE] { return nil }
+        let le = b.prefix(4) == [0xCF, 0xFA, 0xED, 0xFE] || b.prefix(4) == [0xCE, 0xFA, 0xED, 0xFE]
+        guard le else { return nil }
+        return UInt32(b[12]) | UInt32(b[13]) << 8 | UInt32(b[14]) << 16 | UInt32(b[15]) << 24
+    }
+
     /// 尽力用随包的 codex-sign 做 ad-hoc 签名；失败不阻断（App 已无沙盒）。
     private static func attemptSign(_ root: URL, log: Log) async -> Int {
         guard NanoMuseHelperRunner.exists("codex-sign") else {
@@ -892,6 +920,7 @@ enum NanoMuseNativeRuntime {
         // 带 entitlements 签名：no-sandbox / platform-application / get-task-allow …
         // 这样原生 codex 才有机会读到宿主数据；失败再退回 adhoc（至少能起进程）。
         let entitlementPath = Bundle.main.bundlePath + "/entitlements.plist"
+        let dylibEntitlementPath = Bundle.main.bundlePath + "/entitlements-dylib.plist"
         let hasEntitlements = FileManager.default.fileExists(atPath: entitlementPath)
         if hasEntitlements {
             await log.add("  用 entitlements.plist 签名（平台身份）")
@@ -911,15 +940,22 @@ enum NanoMuseNativeRuntime {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             if size > sizeLimit && bigFailed { skippedBig += 1; continue }
             var ok = false
-            if hasEntitlements {
+            // dylib / framework 带受限 entitlements 会被判 code signature invalid，
+            // 只有可执行文件才需要平台身份（MT-Agent 的签名产物就是这个规律：
+            // python3 带 7 个权限槽、Python.framework 一个都没有）。
+            let fileType = machOFileType(url)
+            let wantsEntitlements = hasEntitlements && fileType != 6 && fileType != 8
+            let signEntitlements = wantsEntitlements ? entitlementPath : dylibEntitlementPath
+            let canSignWithCert = wantsEntitlements || FileManager.default.fileExists(atPath: dylibEntitlementPath)
+            if canSignWithCert {
                 let entitled = await Task.detached(priority: .utility) {
                     NanoMuseHelperRunner.run("codex-sign",
-                                             arguments: ["--entitlements", entitlementPath, url.path],
+                                             arguments: ["--entitlements", signEntitlements, url.path],
                                              timeout: 60)
                 }.value
                 ok = entitled.exitCode == 0
                 if !ok {
-                    await log.add("    entitlements 签名失败（rc=\(entitled.exitCode)），试 adhoc")
+                    await log.add("    签名失败（rc=\(entitled.exitCode)）：\(url.lastPathComponent)，试 adhoc")
                 }
             }
             if !ok {

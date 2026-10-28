@@ -210,7 +210,12 @@ echo "== 0c/4 运行时：不再随包，改为运行时下载（对齐 MT-Agent
 # （实测 TheosRuntime/PythonRuntime 属主 mobile:501，就是从外部写进去的）。
 # 所以这里什么都不打进去，只保留一个空的运行时目录作为安装点。
 # 真正的下载/校验/解压逻辑在 NanoMuseRuntimeInstaller.swift。
+cp "$ROOT/Tools/entitlements-dylib.plist" "$TARGET/entitlements-dylib.plist"
+echo "   entitlements-dylib.plist ← 空字典（dylib/framework 不带权限签名）"
 mkdir -p "$TARGET/Runtimes"
+# 包内目录必须让 App（uid 501）写得进去：TrollStore 解包后属主是 33:33，
+# 光靠 755 会让 canWrite 探针失败 → 运行时被装到 Application Support → dylib 无法 mmap。
+chmod 0777 "$TARGET/Runtimes"
 echo "   Runtimes/ 留空，由 App 首启动下载"
 
 # 兼容旧版本：如果 Helpers/rt、Helpers/py 还在（历史产物），清掉避免 virtpath 混乱
