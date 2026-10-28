@@ -261,13 +261,22 @@ enum NanoMuseNativeRuntime {
     static func runtimePathEntries() -> [String] {
         let fm = FileManager.default
         var out: [String] = []
-        for id in ["core_tools", "build_tools", "python", "node", "theos"] {
+        // 已知的优先顺序 + 清单外但已安装的（保证 radare2 / ollvm 这类也能按名字调用）
+        var ids = ["core_tools", "build_tools", "python", "node", "theos", "codex", "reverse_tools", "ollvm"]
+        for id in installedIDs() where !ids.contains(id) { ids.append(id) }
+        for id in ids {
             let base = directory(for: id)
+            guard fm.fileExists(atPath: base.path) else { continue }
             let bin = base.appendingPathComponent("bin").path
-            if fm.fileExists(atPath: bin) { out.append(bin); continue }
-            // python 这种是平铺的：<root>/python3
-            if fm.fileExists(atPath: base.appendingPathComponent("python3").path) {
-                out.append(base.path)
+            if fm.fileExists(atPath: bin) {
+                if !out.contains(bin) { out.append(bin) }
+                continue
+            }
+            // 平铺布局：<root>/python3、<root>/codex、<root>/r2 之类
+            if fm.fileExists(atPath: base.appendingPathComponent("python3").path)
+                || fm.fileExists(atPath: base.appendingPathComponent("codex").path)
+                || fm.fileExists(atPath: base.appendingPathComponent("r2").path) {
+                if !out.contains(base.path) { out.append(base.path) }
             }
         }
         return out
