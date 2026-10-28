@@ -223,7 +223,30 @@ echo "== 0c/4 运行时：不再随包，改为运行时下载（对齐 MT-Agent
 # 真正的下载/校验/解压逻辑在 NanoMuseRuntimeInstaller.swift。
 cp "$ROOT/Tools/entitlements-dylib.plist" "$TARGET/entitlements-dylib.plist"
 echo "   entitlements-dylib.plist ← 空字典（dylib/framework 不带权限签名）"
-mkdir -p "$TARGET/Runtimes"
+# ── 包内可写运行时根：Runtimes/（属主 501:501、模式 0777）────────────────────
+# 为什么要它：App 运行期要能把「下载来的编译器 / dylib / SDK」放进自己的包内。
+#   外置（Documents）在 iOS 16 + TrollStore 下 dlopen 一律 code signature invalid
+#   —— 那条路归内核 AMFI 管，只认 Apple 真证书或 TrustCache，巨魔只放行 exec。
+#   包内文件按 bundle 整体放行，不需要 CMS 也能被 dyld 加载。
+# 为什么必须 0777 + 501：TrollStore 以 root 解包，包内默认 33:33/755，uid 501 写不进，
+#   App 就没法把运行时下载进来。Info-ZIP 会用 0x7875 扩展字段记录 uid/gid，
+#   所以这里先 chown 501:501 再打包，装完即 mobile 可写。
+mkdir -p "$TARGET/Runtimes/toolchains" "$TARGET/Runtimes/frameworks" "$TARGET/Runtimes/sdks"
+for d in "$TARGET/Runtimes" "$TARGET/Runtimes/toolchains" \
+         "$TARGET/Runtimes/frameworks" "$TARGET/Runtimes/sdks"; do
+  : > "$d/.keep"
+  chmod 0777 "$d"
+  chmod 0644 "$d/.keep"
+done
+if [ "$(id -u)" = "0" ]; then
+  chown -R 501:501 "$TARGET/Runtimes"
+elif sudo -n true 2>/dev/null; then
+  sudo chown -R 501:501 "$TARGET/Runtimes"
+else
+  echo "   warning: 无法 chown 501:501（权限不足），将仅依赖 0777 模式" >&2
+fi
+echo "   Runtimes/{toolchains,frameworks,sdks}/ ← 可写运行时根（0777, 501:501）"
+
 if [ -f "$ROOT/Runtimes/python.zip" ]; then
   # 预置运行时：与 MT-Agent 的 .app/PythonRuntime 完全相同的字节（她那份已在本机
   # 验证能跑 ssl/sqlite3）。不能靠 App 自己下载再签 —— 实测容器内 mmap 被拒
@@ -234,8 +257,20 @@ if [ -f "$ROOT/Runtimes/python.zip" ]; then
   chmod -R 0755 "$TARGET/Runtimes/python" 2>/dev/null || true
   echo "   Runtimes/python/ ← 预置（$(du -sh "$TARGET/Runtimes/python" 2>/dev/null | cut -f1)），保持原签名"
 else
-  chmod 0777 "$TARGET/Runtimes"
-  echo "   Runtimes/ 留空，由 App 首启动下载"
+  echo "   Runtimes/ 留空，由 App 首启动下载到 Runtimes/toolchains|frameworks|sdks"
+fi
+
+# 预置包可能改过子目录权限，这里再钉一次可写运行时根
+for d in "$TARGET/Runtimes" "$TARGET/Runtimes/toolchains" \
+         "$TARGET/Runtimes/frameworks" "$TARGET/Runtimes/sdks"; do
+  [ -d "$d" ] && chmod 0777 "$d"
+done
+if [ "$(id -u)" = "0" ]; then
+  chown 501:501 "$TARGET/Runtimes" "$TARGET/Runtimes/toolchains" \
+                "$TARGET/Runtimes/frameworks" "$TARGET/Runtimes/sdks" 2>/dev/null || true
+elif sudo -n true 2>/dev/null; then
+  sudo chown 501:501 "$TARGET/Runtimes" "$TARGET/Runtimes/toolchains" \
+                     "$TARGET/Runtimes/frameworks" "$TARGET/Runtimes/sdks" 2>/dev/null || true
 fi
 
 # 兼容旧版本：如果 Helpers/rt、Helpers/py 还在（历史产物），清掉避免 virtpath 混乱
@@ -313,7 +348,7 @@ ls -lh NanoCode.tipa
 
 if command -v python3 >/dev/null 2>&1; then
   python3 - <<'PY'
-import zipfile, sys
+import zipfile, struct, sys
 z = zipfile.ZipFile("NanoCode.tipa")
 names = z.namelist()
 links = sum(1 for i in z.infolist() if (i.external_attr >> 16) & 0o170000 == 0o120000)
@@ -321,5 +356,37 @@ print(f"   {len(names)} entries, {links} symlinks")
 missing = [n for n in names if "__MACOSX" in n]
 if missing:
     print("error: resource forks inside the archive", file=sys.stderr); sys.exit(1)
+
+# 校验包内可写运行时根：模式 0777、属主 501:501
+want = ["Payload/Minis.app/Runtimes/",
+        "Payload/Minis.app/Runtimes/toolchains/",
+        "Payload/Minis.app/Runtimes/frameworks/",
+        "Payload/Minis.app/Runtimes/sdks/"]
+info = {i.filename: i for i in z.infolist()}
+bad = []
+for n in want:
+    i = info.get(n)
+    if i is None:
+        bad.append(f"{n} 缺失"); continue
+    mode = (i.external_attr >> 16) & 0o7777
+    uid = gid = None
+    extra, j = i.extra, 0
+    while j + 4 <= len(extra):
+        hid, hln = struct.unpack("<HH", extra[j:j + 4])
+        body = extra[j + 4:j + 4 + hln]
+        if hid == 0x7875 and len(body) >= 3:
+            uid = int.from_bytes(body[2:2 + body[1]], "little")
+            gid = int.from_bytes(body[3 + body[1]:], "little")
+        j += 4 + hln
+    print(f"   {n.split('Minis.app/')[1]:26} mode={mode:04o} uid={uid} gid={gid}")
+    if mode != 0o777:
+        bad.append(f"{n} 模式 {mode:04o} != 0777")
+    if uid is not None and uid != 501:
+        bad.append(f"{n} 属主 {uid} != 501")
+if bad:
+    print("error: 可写运行时根校验失败:", file=sys.stderr)
+    for b in bad: print("  - " + b, file=sys.stderr)
+    sys.exit(1)
+print("   Runtimes/ 可写校验通过（0777 / 501:501）")
 PY
 fi
