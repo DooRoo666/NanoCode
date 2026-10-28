@@ -468,6 +468,17 @@ struct NanoMuseCodexView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                if isRunning {
+                    ProgressView(value: min(max(progress, 0), 1))
+                        .progressViewStyle(.linear)
+                        .tint(NanoMuseTones.action)
+                        .padding(.top, 5)
+                    Text(phaseText)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.top, 1)
+                }
             }
             Spacer(minLength: 8)
             if NanoMuseTools.hostToolIDs.contains(spec.id) {
@@ -475,7 +486,9 @@ struct NanoMuseCodexView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if isRunning {
-                ProgressView().controlSize(.small)
+                Text("\(Int(min(max(progress, 0), 1) * 100))%")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 14) {
                     // 已装才显示删除；删除后清掉状态，下次重新探测
