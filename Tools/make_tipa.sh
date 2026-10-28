@@ -213,10 +213,19 @@ echo "== 0c/4 运行时：不再随包，改为运行时下载（对齐 MT-Agent
 cp "$ROOT/Tools/entitlements-dylib.plist" "$TARGET/entitlements-dylib.plist"
 echo "   entitlements-dylib.plist ← 空字典（dylib/framework 不带权限签名）"
 mkdir -p "$TARGET/Runtimes"
-# 包内目录必须让 App（uid 501）写得进去：TrollStore 解包后属主是 33:33，
-# 光靠 755 会让 canWrite 探针失败 → 运行时被装到 Application Support → dylib 无法 mmap。
-chmod 0777 "$TARGET/Runtimes"
-echo "   Runtimes/ 留空，由 App 首启动下载"
+if [ -f "$ROOT/Runtimes/python.zip" ]; then
+  # 预置运行时：与 MT-Agent 的 .app/PythonRuntime 完全相同的字节（她那份已在本机
+  # 验证能跑 ssl/sqlite3）。不能靠 App 自己下载再签 —— 实测容器内 mmap 被拒
+  # （sandbox blocked mmap），只有 App 包内可执行，而包内属主 33:33、App 是 501 写不进。
+  mkdir -p "$TARGET/Runtimes/python"
+  ( cd "$TARGET/Runtimes/python" && unzip -oq "$ROOT/Runtimes/python.zip" )
+  printf 'bundled\n' > "$TARGET/Runtimes/python/.installed"
+  chmod -R 0755 "$TARGET/Runtimes/python" 2>/dev/null || true
+  echo "   Runtimes/python/ ← 预置（$(du -sh "$TARGET/Runtimes/python" 2>/dev/null | cut -f1)），保持原签名"
+else
+  chmod 0777 "$TARGET/Runtimes"
+  echo "   Runtimes/ 留空，由 App 首启动下载"
+fi
 
 # 兼容旧版本：如果 Helpers/rt、Helpers/py 还在（历史产物），清掉避免 virtpath 混乱
 rm -rf "$TARGET/Helpers/rt" "$TARGET/Helpers/py" 2>/dev/null || true
@@ -241,6 +250,12 @@ while IFS= read -r -d '' f; do
     case "$f" in
       "$TARGET/$APP_NAME") continue ;;                    # 主程序最后签
       *.appex/*) continue ;;                              # 扩展单独签
+      */Runtimes/*)
+        # 预置运行时（Python 等）是 Device 侧用 codex-sign 签好的，形态与 MT-Agent
+        # 的 PythonRuntime 完全一致（dylib 3 blob、launcher 5 blob）。用 ldid 重签会把
+        # 它改坏，所以原样保留。
+        keepCount=$((keepCount+1))
+        continue ;;                            
       */Helpers/bash.real|*/Helpers/codex-sign|*/Helpers/ca-filetool)
         # 这三个是 MT-Agent 发布时用 ldid + 完整巨魔权限签好的。
         # 我们重签会改写 CodeDirectory / requirements / 特殊槽位，虽然形态看起来一样，
