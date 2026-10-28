@@ -96,7 +96,7 @@ jobs:
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
           # 新增的运行时下载/解包源文件也必须注册，否则不会被编译。
-          for extra in NanoMuseRuntimeInstaller.swift NanoMuseTarGz.swift NanoMuseEnvCheck.swift; do
+          for extra in NanoMuseRuntimeInstaller.swift NanoMuseTarGz.swift NanoMuseEnvCheck.swift NanoMuseNyxian.swift; do
             if [ -f "upstream/android/src/ios/NanoMuse/$extra" ]; then
               python3 Tools/apply_overlay.py \
                 --project upstream/android/src/ios/Minis.xcodeproj \
