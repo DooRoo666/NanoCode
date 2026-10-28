@@ -391,7 +391,7 @@ enum NanoMuseNyxian {
 
         // --- Swift 编译探针：多组参数，取第一组成功的
         if case .success(let toolchain) = load() {
-            let sres = swiftProbe(toolchain: toolchain, work: work)
+            let sres = swiftProbe(loaded: toolchain, work: work)
             out.append("--- Swift 编译")
             out.append(sres.log)
             out.append(sres.ok ? "SWIFT_OK: swiftc 可用 ✅" : "SWIFT_FAIL: swiftc 未打通 ❌")
@@ -432,7 +432,7 @@ enum NanoMuseNyxian {
     }
 
     /// 把一个 Swift 源文件编译成 .o。依次尝试多组参数，返回第一组成功的组合。
-    static func swiftProbe(toolchain: Toolchain, work: URL) -> (ok: Bool, log: String) {
+    static func swiftProbe(loaded: Loaded, work: URL) -> (ok: Bool, log: String) {
         let fm = FileManager.default
         let src = work.appendingPathComponent("probe.swift")
         let obj = work.appendingPathComponent("probe_swift.o")
@@ -459,7 +459,7 @@ enum NanoMuseNyxian {
             ("D 仅 isysroot", ["-isysroot", sdkPath, "-target", "arm64-apple-ios16.0"] + tail),
         ]
         for (name, args) in variants {
-            let r = toolchain.run(args, swift: true)
+            let r = loaded.run(args, swift: true)
             let size = ((try? fm.attributesOfItem(atPath: obj.path))?[.size] as? NSNumber)?.intValue ?? 0
             log.append("[\(name)] ok=\(r.ok) obj=\(size)B")
             if size > 0 {
