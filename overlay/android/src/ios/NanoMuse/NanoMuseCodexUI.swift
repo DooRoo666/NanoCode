@@ -469,7 +469,7 @@ struct NanoMuseCodexView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                 if isRunning {
-                    ProgressView(value: min(max(progress, 0), 1))
+                    ProgressView(value: min(max((progress ?? 0), 0), 1))
                         .progressViewStyle(.linear)
                         .tint(NanoMuseTones.action)
                         .padding(.top, 5)
@@ -486,7 +486,7 @@ struct NanoMuseCodexView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } else if isRunning {
-                Text("\(Int(min(max(progress, 0), 1) * 100))%")
+                Text("\(Int(min(max((progress ?? 0), 0), 1) * 100))%")
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.secondary)
             } else {
