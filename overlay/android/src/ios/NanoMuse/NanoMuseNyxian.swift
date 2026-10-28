@@ -27,9 +27,18 @@ enum NanoMuseNyxian {
             .appendingPathComponent("NanoCodex/nyxian", isDirectory: true)
     }
 
-    /// CoreCompiler 的查找顺序：bundle 内 > 容器 Documents > App Support > iSH 桥。
+    /// 包内可写运行时根（打包时已 chown 501:501 / chmod 0777）。
+    /// 只有放在 App 包内的代码才能被 dlopen：包外（Documents 等）在 iOS 16 + TrollStore
+    /// 下由内核 AMFI 判定，只认 Apple 真证书或 TrustCache，伪造 CMS 也报
+    /// `code signature invalid`；巨魔只放行 exec（同一目录的可执行文件能跑）。
+    static var runtimes: URL {
+        URL(fileURLWithPath: Bundle.main.bundlePath).appendingPathComponent("Runtimes", isDirectory: true)
+    }
+
+    /// CoreCompiler 的查找顺序：包内可写 Runtimes > bundle Frameworks > 容器 Documents > App Support > iSH 桥。
     static var frameworkCandidates: [String] {
         [
+            runtimes.appendingPathComponent("frameworks/CoreCompiler.framework/CoreCompiler").path,
             Bundle.main.bundlePath + "/Frameworks/CoreCompiler.framework/CoreCompiler",
             documents.appendingPathComponent("nyxian/CoreCompiler.framework/CoreCompiler").path,
             support.appendingPathComponent("CoreCompiler.framework/CoreCompiler").path,
@@ -40,7 +49,8 @@ enum NanoMuseNyxian {
 
     /// 解包后的 iPhoneOS SDK 目录（bootstrap zip 解到这里）。
     static var sdkCandidates: [URL] {
-        let roots = [documents.appendingPathComponent("nyxian", isDirectory: true),
+        let roots = [runtimes.appendingPathComponent("sdks", isDirectory: true),
+                     documents.appendingPathComponent("nyxian", isDirectory: true),
                      support]
         var out: [URL] = []
         let fm = FileManager.default
@@ -314,6 +324,21 @@ enum NanoMuseNyxian {
         let stamp = ISO8601DateFormatter().string(from: Date())
         out.append("=== Nyxian 工具链自检 \(stamp) ===")
         out.append("bundle: \(Bundle.main.bundlePath)")
+
+        // 包内可写运行时根：决定 App 能不能自己把编译器 / dylib / SDK 下载进来
+        let fm = FileManager.default
+        let root = runtimes
+        try? fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let probe = root.appendingPathComponent(".wtest")
+        var writable = false
+        if (try? "ok".write(to: probe, atomically: true, encoding: .utf8)) != nil {
+            writable = true
+            try? fm.removeItem(at: probe)
+        }
+        let attrs = (try? fm.attributesOfItem(atPath: root.path)) ?? [:]
+        let owner = attrs[.ownerAccountID] as? Int ?? -1
+        let perm = attrs[.posixPermissions] as? Int ?? -1
+        out.append("运行时根: \(root.path) \(writable ? "可写 ✅" : "不可写 ❌") owner=\(owner) mode=\(String(perm, radix: 8))")
 
         for path in frameworkCandidates {
             let exists = FileManager.default.fileExists(atPath: path)
