@@ -139,14 +139,15 @@ enum NanoMuseNyxian {
         // MARK: 执行
 
         /// 跑一次 driver（等价于一次 clang 命令行）。返回是否全部成功 + 日志。
-        func run(_ args: [String]) -> (ok: Bool, log: String) {
+        func run(_ args: [String], swift: Bool = false) -> (ok: Bool, log: String) {
             var log: [String] = []
             log.append("argv: " + args.joined(separator: " "))
 
             let cfArgs = NanoMuseNyxian.cfArray(args)
             defer { NanoMuseNyxian.cfRelease(cfArgs) }
 
-            guard let driver = driverCreate(nil, cfArgs, 0) else {
+            let driver = swift ? driverCreate(nil, cfArgs, 1) : driverCreate(nil, cfArgs, 0)
+            guard let driver = driver else {
                 return (false, log.joined(separator: "\n") + "\nCCDriverCreate 返回 nil（argv 被拒）")
             }
             defer { NanoMuseNyxian.cfRelease(driver) }
@@ -312,7 +313,9 @@ enum NanoMuseNyxian {
     }
 
     static func detectSDK() -> URL? {
-        sdkCandidates.first
+        let fm = FileManager.default
+        for url in sdkCandidates where fm.fileExists(atPath: url.path) { return url }
+        return nil
     }
 
     // MARK: - 自检
@@ -358,6 +361,7 @@ enum NanoMuseNyxian {
                 for note in lastPreloadNotes { out.append("  · \(note)") }
             }
             out.append("SDK: \(detectSDK()?.path ?? "未安装（编译无 include 的源码不受影响）")")
+            out.append("Swift 资源: \(detectSwiftResources()?.path ?? "未安装（-resource-dir 缺省）")")
         }
 
         let work = documents.appendingPathComponent("nyxian-out", isDirectory: true)
@@ -384,6 +388,16 @@ enum NanoMuseNyxian {
         out.append(linked.log)
         out.append("binary header: \(firstBytes(binary))")
         out.append(linked.ok ? "结论: 工具链可用 ✅" : "结论: 链路有断点 ❌")
+
+        // --- Swift 编译探针：多组参数，取第一组成功的
+        if case .success(let toolchain) = load() {
+            let sres = swiftProbe(toolchain: toolchain, work: work)
+            out.append("--- Swift 编译")
+            out.append(sres.log)
+            out.append(sres.ok ? "SWIFT_OK: swiftc 可用 ✅" : "SWIFT_FAIL: swiftc 未打通 ❌")
+        } else {
+            out.append("SWIFT_SKIP: 框架未加载")
+        }
         return out.joined(separator: "\n")
     }
 
@@ -394,6 +408,67 @@ enum NanoMuseNyxian {
         let url = documents.appendingPathComponent("nyxian-diag.txt")
         try? text.write(to: url, atomically: true, encoding: .utf8)
         return text
+    }
+
+    // MARK: - Swift
+
+    /// 找 swiftc 需要的资源目录（clang 内建头 / swift migrator / libclang_rt）。
+    static func detectSwiftResources() -> URL? {
+        let fm = FileManager.default
+        let paths = [
+            runtimes.appendingPathComponent("toolchains/nyxian").path,
+            runtimes.appendingPathComponent("toolchains").path,
+            documents.appendingPathComponent("nyxian/Shared").path,
+            documents.appendingPathComponent("nyxian").path,
+            support.appendingPathComponent("nyxian/Shared").path,
+            "/var/mobile/Documents/alpine-rootfs/data/var/minis/workspace/nyxian/Shared",
+        ]
+        for p in paths {
+            if fm.fileExists(atPath: p + "/swift") || fm.fileExists(atPath: p + "/include") {
+                return URL(fileURLWithPath: p)
+            }
+        }
+        return nil
+    }
+
+    /// 把一个 Swift 源文件编译成 .o。依次尝试多组参数，返回第一组成功的组合。
+    static func swiftProbe(toolchain: Toolchain, work: URL) -> (ok: Bool, log: String) {
+        let fm = FileManager.default
+        let src = work.appendingPathComponent("probe.swift")
+        let obj = work.appendingPathComponent("probe_swift.o")
+        let cache = work.appendingPathComponent("modulecache", isDirectory: true)
+        try? fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        try? fm.removeItem(at: obj)
+        let code = "import Foundation\nlet n: Int = 42\nprint(\"swift ok \\(n)\")\n"
+        do { try code.write(to: src, atomically: true, encoding: .utf8) }
+        catch { return (false, "写 probe.swift 失败: \(error)") }
+        guard let sdk = detectSDK() else { return (false, "没有 SDK，Swift 无法编译") }
+        let sdkPath = sdk.path
+        let res = detectSwiftResources()
+        var log: [String] = ["SDK: \(sdkPath)", "资源: \(res?.path ?? "无")"]
+        var common: [String] = ["-target", "arm64-apple-ios16.0", "-sdk", sdkPath,
+                                "-I", sdkPath + "/usr/lib/swift",
+                                "-L", sdkPath + "/usr/lib/swift",
+                                "-module-cache-path", cache.path]
+        if let res { common += ["-resource-dir", res.path] }
+        let tail = ["-c", src.path, "-o", obj.path]
+        let variants: [(String, [String])] = [
+            ("A -sdk", common + tail),
+            ("B +isysroot", ["-isysroot", sdkPath] + common + tail),
+            ("C 裸 -sdk", ["-sdk", sdkPath] + tail),
+            ("D 仅 isysroot", ["-isysroot", sdkPath, "-target", "arm64-apple-ios16.0"] + tail),
+        ]
+        for (name, args) in variants {
+            let r = toolchain.run(args, swift: true)
+            let size = ((try? fm.attributesOfItem(atPath: obj.path))?[.size] as? NSNumber)?.intValue ?? 0
+            log.append("[\(name)] ok=\(r.ok) obj=\(size)B")
+            if size > 0 {
+                log.append("参数: " + args.joined(separator: " "))
+                return (true, log.joined(separator: "\n"))
+            }
+            for line in r.log.split(separator: "\n").prefix(12) { log.append("    " + String(line)) }
+        }
+        return (false, log.joined(separator: "\n"))
     }
 
     // MARK: - 小工具
