@@ -106,7 +106,7 @@ struct NanoMuseRuntimePage: View {
                 if mode == .native {
                     NanoMuseRowDivider()
                     NanoMuseRowLabel(title: "安装位置",
-                                     value: NanoMuseNativeRuntime.rootDirectory.lastPathComponent,
+                                     value: NanoMuseNativeRuntime.rootLocationLabel,
                                      titleColor: .primary, chevron: false)
                 }
                 NanoMuseRowDivider()
@@ -118,7 +118,7 @@ struct NanoMuseRuntimePage: View {
                         .padding(.horizontal, 16).padding(.bottom, 10)
                 }
             }
-            NanoMuseCaption(text: "宿主包是 iOS Mach-O（App 容器内，给 Codex/工具调用）；Alpine 包是 Linux ELF（iSH rootfs，给终端用）。两者互不覆盖，卸载也各删各的。")
+            NanoMuseCaption(text: mode == .native ? NanoMuseNativeRuntime.rootLocationNote : "宿主包是 iOS Mach-O（App 容器内，给 Codex/工具调用）；Alpine 包是 Linux ELF（iSH rootfs，给终端用）。两者互不覆盖，卸载也各删各的。")
 
             if !packages.isEmpty {
                 NanoMuseCard {

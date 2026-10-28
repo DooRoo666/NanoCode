@@ -56,11 +56,39 @@ enum NanoMuseNativeRuntime {
         if probeWritable(bundled) {
             return bundled
         }
+        // 包内不可写时，落到「本 App 自己的数据容器」——这是唯一能装可执行代码、
+        // dylib 不会被拦的位置。之前落到 ~/Library/Application Support（带 no-container
+        // 时就是 /var/mobile/Library/…，其实是系统目录、不属于任何容器），
+        // 所以 Python.framework 一加载就被判 sandbox blocked mmap()。
+        if let container = ownContainerURL {
+            let dir = container
+                .appendingPathComponent("Library/Application Support/NanoCodex/runtimes", isDirectory: true)
+            if probeWritable(dir) { return dir }
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let dir = base.appendingPathComponent("NanoCodex/runtimes", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    /// 通过容器元数据找到本 App 的 Data 容器（bundleIdentifier 匹配）。
+    /// 带 no-container 权限时 NSHomeDirectory() 是 /var/mobile，靠它拿不到容器。
+    static var ownContainerURL: URL? {
+        let bundleID = Bundle.main.bundleIdentifier ?? ""
+        guard !bundleID.isEmpty else { return nil }
+        let base = URL(fileURLWithPath: "/var/mobile/Containers/Data/Application")
+        guard let dirs = try? FileManager.default.contentsOfDirectory(at: base,
+                                                                    includingPropertiesForKeys: nil) else { return nil }
+        for dir in dirs {
+            let meta = dir.appendingPathComponent(".com.apple.mobile_container_manager.metadata.plist")
+            guard let data = try? Data(contentsOf: meta),
+                  let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+                  let dict = plist as? [String: Any],
+                  (dict["MCMMetadataIdentifier"] as? String) == bundleID else { continue }
+            return dir
+        }
+        return nil
     }
 
     /// **真写一次**再判定。不能用 `isWritableFile`：
@@ -76,6 +104,29 @@ enum NanoMuseNativeRuntime {
         }
         try? fm.removeItem(at: probe)
         return true
+    }
+
+    /// 运行时根落在包内还是数据容器（MT-Agent 是包内）。
+    static var rootIsBundled: Bool {
+        probeWritable(URL(fileURLWithPath: Bundle.main.bundlePath)
+            .appendingPathComponent("Runtimes", isDirectory: true))
+    }
+
+    /// 极短标签，给行值用（行值会被单行中部省略）。
+    static var rootLocationLabel: String {
+        rootIsBundled ? "包内 Runtimes" : "本 App 容器"
+    }
+
+    /// 完整解释：为什么没进包内、怎么改回包内。放卡片下方，可换行。
+    static var rootLocationNote: String {
+        if rootIsBundled {
+            return "运行时装在 App 包内 Runtimes/，与 MT-Agent 一致，dylib 不会被沙箱拦。"
+        }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: Bundle.main.bundlePath)
+        let owner = (attrs?[.ownerAccountName] as? String) ?? "?"
+        let mode = (attrs?[.posixPermissions] as? NSNumber)?.intValue ?? 0
+        let path = (rootDirectory.path as NSString).abbreviatingWithTildeInPath
+        return String(format: "App 包不可写（属主 %@ / 0%o），运行时只能落在 %@。包外的 dylib 会被 iOS 拦（sandbox blocked mmap / code signature invalid），所以 Python 这类带 framework 的运行时装完也跑不起来。用 TrollStore 重装本 App（让包体归 mobile 所有）就能改回包内。", owner, mode, path)
     }
 
     static func directory(for id: String) -> URL {
@@ -920,7 +971,6 @@ enum NanoMuseNativeRuntime {
         // 带 entitlements 签名：no-sandbox / platform-application / get-task-allow …
         // 这样原生 codex 才有机会读到宿主数据；失败再退回 adhoc（至少能起进程）。
         let entitlementPath = Bundle.main.bundlePath + "/entitlements.plist"
-        let dylibEntitlementPath = Bundle.main.bundlePath + "/entitlements-dylib.plist"
         let hasEntitlements = FileManager.default.fileExists(atPath: entitlementPath)
         if hasEntitlements {
             await log.add("  用 entitlements.plist 签名（平台身份）")
@@ -929,6 +979,7 @@ enum NanoMuseNativeRuntime {
         }
 
         var signed = 0
+        var keptOriginal = 0
         // 单个文件 > 64 MB 时签名工具很容易被 jetsam 杀掉（SIGKILL/137），
         // 而且 deb 里的大二进制本来就带签名，先跳过、交给"运行探测"判断。
         // 先试大文件；只有大文件确实签失败后，才跳过后续大文件。
@@ -939,18 +990,29 @@ enum NanoMuseNativeRuntime {
         for url in targets {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             if size > sizeLimit && bigFailed { skippedBig += 1; continue }
-            var ok = false
-            // dylib / framework 带受限 entitlements 会被判 code signature invalid，
-            // 只有可执行文件才需要平台身份（MT-Agent 的签名产物就是这个规律：
-            // python3 带 7 个权限槽、Python.framework 一个都没有）。
             let fileType = machOFileType(url)
-            let wantsEntitlements = hasEntitlements && fileType != 6 && fileType != 8
-            let signEntitlements = wantsEntitlements ? entitlementPath : dylibEntitlementPath
-            let canSignWithCert = wantsEntitlements || FileManager.default.fileExists(atPath: dylibEntitlementPath)
-            if canSignWithCert {
+            // dylib / framework：一比一照 MT-Agent 的产物来签 —— 一个权限槽都不带。
+            // 实测差异：MT 的 Python.framework 是 3 个 blob（CD-SHA1 + CD-SHA256 + CMS）；
+            // 我们之前用 --entitlements（哪怕内容是空字典）会多出第 4 个 blob
+            // （entitlements，1076 字节，等于 App 自己的权限表），AMFI 直接判
+            // code signature invalid。所以这里只发 codex-sign <path>，失败就保留原签名。
+            if fileType == 6 || fileType == 8 {
+                let plain = await Task.detached(priority: .utility) {
+                    NanoMuseHelperRunner.run("codex-sign", arguments: [url.path], timeout: 60)
+                }.value
+                if plain.exitCode == 0 {
+                    signed += 1
+                } else {
+                    keptOriginal += 1
+                }
+                continue
+            }
+            var ok = false
+            // 可执行文件才需要平台身份（no-sandbox / platform-application / get-task-allow）。
+            if hasEntitlements {
                 let entitled = await Task.detached(priority: .utility) {
                     NanoMuseHelperRunner.run("codex-sign",
-                                             arguments: ["--entitlements", signEntitlements, url.path],
+                                             arguments: ["--entitlements", entitlementPath, url.path],
                                              timeout: 60)
                 }.value
                 ok = entitled.exitCode == 0
@@ -976,6 +1038,9 @@ enum NanoMuseNativeRuntime {
         }
         if skippedBig > 0 {
             await log.add("  跳过 \(skippedBig) 个超过 64 MB 的文件（避免签名工具被系统杀掉）")
+        }
+        if keptOriginal > 0 {
+            await log.add("  \(keptOriginal) 个 dylib/framework 签名工具返回失败，已保留包内原签名")
         }
         return signed
     }
