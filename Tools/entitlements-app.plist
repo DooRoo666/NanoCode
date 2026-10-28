@@ -1,37 +1,42 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  与 MT-Agent (wiki.qaq.codexapp) 主程序权限表逐键相同，只把 application-groups
-  换成我们自己的 group（她那串 group.wiki.qaq.codexapp 我们无权声明）。
-
-  实测证据（2026-10-28，同一目录同一 framework 文件对照）：
-    MT 原版 python3（她签，1036B 权限表）→ 在**我们的数据容器里**跑得起来，
-      framework 正常加载、import ssl 成功。
-    我们自己签的 python3（1068B，多 disable-library-validation / container-required，
-      少 get-task-allow、task_for_pid-allow、springboard.debugapplications）
-      → 加载 Python.framework/Python 时报 sandbox blocked mmap。
-  结论：位置/下载/安装都无关，差的是权限表内容。多出来的非法键会让 sandboxd
-  不套用 no-sandbox 而退回默认沙箱，于是连自己包内的 dylib 都 mmap 不了。
-  所以这里一个键都不多加。
--->
 <plist version="1.0">
 <dict>
-	<key>com.apple.developer.kernel.extended-virtual-addressing</key><true/>
-	<key>com.apple.private.background-task.allowed</key><true/>
-	<key>com.apple.private.persona-mgmt</key><true/>
-	<key>com.apple.private.security.container-required</key><false/>
-	<key>com.apple.private.security.no-container</key><true/>
-	<key>com.apple.private.security.no-sandbox</key><true/>
-	<key>com.apple.private.security.storage.AppBundles</key><true/>
-	<key>com.apple.private.security.storage.AppDataContainers</key><true/>
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+	<key>com.apple.private.background-task.allowed</key>
+	<true/>
+	<key>com.apple.private.persona-mgmt</key>
+	<true/>
+	<key>com.apple.private.security.container-required</key>
+	<false/>
+	<key>com.apple.private.security.disable-library-validation</key>
+	<true/>
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppBundles</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.io.github.nanomuse.app</string>
 	</array>
-	<key>com.apple.springboard.debugapplications</key><true/>
-	<key>get-task-allow</key><true/>
-	<key>platform-application</key><true/>
-	<key>proc_info-allow</key><true/>
-	<key>task_for_pid-allow</key><true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+	<key>com.apple.springboard.debugapplications</key>
+	<true/>
+	<key>dynamic-codesigning</key>
+	<true/>
+	<key>get-task-allow</key>
+	<true/>
+	<key>platform-application</key>
+	<true/>
+	<key>proc_info-allow</key>
+	<true/>
+	<key>task_for_pid-allow</key>
+	<true/>
 </dict>
 </plist>

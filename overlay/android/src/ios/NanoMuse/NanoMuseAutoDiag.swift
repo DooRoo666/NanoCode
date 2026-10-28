@@ -19,6 +19,8 @@ enum NanoMuseAutoDiag {
                 try? FileManager.default.removeItem(at: file)
             }
             NanoMusePersona.probeAndWrite()
+            // Nyxian 工具链自检：dlopen CoreCompiler + 编译/链接一个 hello，结果写 nyxian-diag.txt
+            _ = NanoMuseNyxian.writeDiagnostics()
         }
     }
 }
