@@ -63,20 +63,20 @@ enum NanoMuseNyxian {
     // MARK: - C API 签名（参数一律按裸指针传递，避免 CF 桥接类型在
     //          @convention(c) 里的兼容问题）
 
-    private typealias FnDriverCreate = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt8) -> UnsafeMutableRawPointer?
-    private typealias FnDriverCreateJobs = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
-    private typealias FnDriverCopySDK = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
-    private typealias FnDriverCopySysroot = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
-    private typealias FnJobGetType = @convention(c) (UnsafeMutableRawPointer?) -> UInt8
-    private typealias FnJobExecute = @convention(c) (UnsafeMutableRawPointer?,
+    typealias FnDriverCreate = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UInt8) -> UnsafeMutableRawPointer?
+    typealias FnDriverCreateJobs = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias FnDriverCopySDK = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias FnDriverCopySysroot = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias FnJobGetType = @convention(c) (UnsafeMutableRawPointer?) -> UInt8
+    typealias FnJobExecute = @convention(c) (UnsafeMutableRawPointer?,
                                                      UnsafeMutablePointer<UnsafeMutableRawPointer?>?,
                                                      UnsafeMutablePointer<UnsafeMutableRawPointer?>?) -> UInt8
-    private typealias FnJobSupportsMT = @convention(c) (UInt8) -> UInt8
-    private typealias FnSDKCreate = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
-    private typealias FnSDKCopyVersion = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
-    private typealias FnDiagGetMessage = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
-    private typealias FnDiagGetLevel = @convention(c) (UnsafeMutableRawPointer?) -> UInt8
-    private typealias FnMaxCores = @convention(c) () -> Int32
+    typealias FnJobSupportsMT = @convention(c) (UInt8) -> UInt8
+    typealias FnSDKCreate = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias FnSDKCopyVersion = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias FnDiagGetMessage = @convention(c) (UnsafeMutableRawPointer?) -> UnsafeMutableRawPointer?
+    typealias FnDiagGetLevel = @convention(c) (UnsafeMutableRawPointer?) -> UInt8
+    typealias FnMaxCores = @convention(c) () -> Int32
 
     /// 一份已经 dlopen 好的 CoreCompiler。
     final class Loaded {
