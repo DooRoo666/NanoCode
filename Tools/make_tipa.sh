@@ -28,8 +28,9 @@ RUNTIME_ENT="$ROOT/Tools/entitlements-runtime.plist"
 # 主程序 Minis 仍不带 —— 它自己的进程行为保持原样，避免影响 fork。
 # 注意：早先以为 EVA 会让 fork 崩，后来实测 os.fork()/fork+exec 在 TheosRuntime 下都正常，
 # 所以 EVA 不是 SIGBUS 的原因，不该一刀切掉。
-if grep -q "<key>com.apple.developer.kernel.extended-virtual-addressing</key>" "$MAIN_ENT"; then
-  echo "error: 主程序模板里不该有 extended-virtual-addressing（只放在 runtime 模板）" >&2
+# MT-Agent 的主程序与运行时二进制用的是同一份 14 键表（含 EVA），
+# 本机实测她的 CodexApp 主程序签名里确实带 EVA → 不再禁止主程序模板携带它。
+if false; then
   exit 1
 fi
 
