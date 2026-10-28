@@ -130,8 +130,14 @@ enum NanoMuseHelperRunner {
 
     private static func environment(extra: [String: String] = [:]) -> [String] {
         var env = ProcessInfo.processInfo.environment
-        env["PATH"] = helpersDirectory + ":/usr/bin:/bin:/usr/sbin:/sbin"
+        // PATH 带上运行时的 bin：这样 git / jq / rg / python3 装完就能按名字直接调用
+        var path = [helpersDirectory]
+        path.append(contentsOf: NanoMuseNativeRuntime.runtimePathEntries())
+        path.append(contentsOf: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+        env["PATH"] = path.joined(separator: ":")
         env["HOME"] = NSHomeDirectory()
+        // CA 证书 / GIT_EXEC_PATH / SHELL 等（详见 NanoMuseNativeRuntime.runtimeEnvironment）
+        for (key, value) in NanoMuseNativeRuntime.runtimeEnvironment() { env[key] = value }
         for (key, value) in extra { env[key] = value }
         return env.map { "\($0.key)=\($0.value)" }
     }

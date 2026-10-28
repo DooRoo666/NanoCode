@@ -38,14 +38,14 @@ if sys.platform == "ios":
             if isinstance(args, (str, bytes)):
                 argv = [args.decode() if isinstance(args, bytes) else args]
                 if shell:
-                    argv = ["/bin/sh", "-c", argv[0]]
+                    argv = [_shell(), "-c", argv[0]]
             else:
                 argv = [a.decode() if isinstance(a, bytes) else str(a) for a in args]
             if executable:
                 argv = [executable] + argv[1:]
 
             if shell and not (isinstance(args, (str, bytes))):
-                argv = ["/bin/sh", "-c", " ".join(argv)]
+                argv = [_shell(), "-c", " ".join(argv)]
 
             self._tmp = []
             self.args = argv
@@ -87,7 +87,7 @@ if sys.platform == "ios":
 
             if cwd:
                 # posix_spawn 没有"先 chdir"的通道，用 sh 包一层
-                argv = ["/bin/sh", "-c", 'cd "$0" || exit 1; exec "$@"', cwd] + argv
+                argv = [_shell(), "-c", 'cd "$0" || exit 1; exec "$@"', cwd] + argv
 
             fa = []
             for tgt, spec in ((0, self._in), (1, self._out), (2, self._err)):

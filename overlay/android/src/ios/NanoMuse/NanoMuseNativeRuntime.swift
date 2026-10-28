@@ -220,6 +220,66 @@ enum NanoMuseNativeRuntime {
         }
     }
 
+    // MARK: - 运行时工具的环境变量
+
+    /// 运行时里的二进制是「装好了却用不了」的重灾区，根因只有两个，都能靠环境变量修：
+    /// · **没有根证书**：iOS 上 `/private/etc/ssl` 根本不存在，curl 报
+    ///   `SSL Trust Anchors: no trust anchors configured`、python 报证书校验失败、
+    ///   git 拉不了 https。App 包里自带 `cacert.pem`（Mozilla 2026-09，121 张），指向它即可。
+    /// · **编译期路径写死**：core_tools 的 git 把 exec-path 编成
+    ///   `/Users/macos/libexec/git-core` → `unable to find remote helper for 'https'`；
+    ///   指 GIT_EXEC_PATH 到自家 bin 就好。
+    /// 全部指向 App 包内 / 本 App 容器内的文件，不依赖设备上任何别的 App 或系统文件。
+    static func runtimeEnvironment() -> [String: String] {
+        var env: [String: String] = [:]
+        let fm = FileManager.default
+        let bundle = Bundle.main.bundlePath
+
+        let ca = bundle + "/cacert.pem"
+        if fm.fileExists(atPath: ca) {
+            env["SSL_CERT_FILE"] = ca
+            env["CURL_CA_BUNDLE"] = ca
+            env["REQUESTS_CA_BUNDLE"] = ca
+            env["GIT_SSL_CAINFO"] = ca
+            env["PIP_CERT"] = ca
+        }
+
+        let core = directory(for: "core_tools")
+        let coreBin = core.appendingPathComponent("bin").path
+        if fm.fileExists(atPath: coreBin + "/git") {
+            env["GIT_EXEC_PATH"] = coreBin
+            for tpl in [core.appendingPathComponent("share/git-core/templates").path,
+                        core.appendingPathComponent("share/templates").path] {
+                if fm.fileExists(atPath: tpl) { env["GIT_TEMPLATE_DIR"] = tpl; break }
+            }
+            env["GIT_TERMINAL_PROMPT"] = "0"
+        }
+
+        // python 的 sitecustomize 用它把 shell=True 指到自带 bash（iOS 没有 /bin/sh）
+        let bash = bundle + "/Helpers/bash.real"
+        if fm.fileExists(atPath: bash) {
+            env["NANOMUSE_SH"] = bash
+            env["SHELL"] = bash
+        }
+        return env
+    }
+
+    /// PATH 里该追加的运行时目录：core_tools/bin、python、node/bin …（存在才加）
+    static func runtimePathEntries() -> [String] {
+        let fm = FileManager.default
+        var out: [String] = []
+        for id in ["core_tools", "build_tools", "python", "node", "theos"] {
+            let base = directory(for: id)
+            let bin = base.appendingPathComponent("bin").path
+            if fm.fileExists(atPath: bin) { out.append(bin); continue }
+            // python 这种是平铺的：<root>/python3
+            if fm.fileExists(atPath: base.appendingPathComponent("python3").path) {
+                out.append(base.path)
+            }
+        }
+        return out
+    }
+
     /// 已经装过 python 的老用户：进一次运行时列表就把支撑文件补上，不需要重装。
     private static func healPythonSupportIfNeeded() {
         let dir = directory(for: "python")

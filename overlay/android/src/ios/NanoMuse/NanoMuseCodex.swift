@@ -905,8 +905,14 @@ public enum NanoMuseCodex {
             }
             env["PATH"] = (
                 [binDir.path, hostToolsDir, rtRoot + "/bin", pyRoot, NanoMuseHelperRunner.helpersDirectory]
+                + NanoMuseNativeRuntime.runtimePathEntries()
                 + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
             ).joined(separator: ":")
+            // 运行时工具的通用环境（CA 证书、GIT_EXEC_PATH 等）：
+            // 不覆盖上面已设的 SHELL / PATH 之类的键
+            for (key, value) in NanoMuseNativeRuntime.runtimeEnvironment() where env[key] == nil {
+                env[key] = value
+            }
             // 有些路径（PTY / 登录 shell）会直接读 $SHELL
             if !shellPath.isEmpty {
                 env["SHELL"] = shellPath
