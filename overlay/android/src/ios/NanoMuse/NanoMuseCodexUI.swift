@@ -69,6 +69,17 @@ struct NanoMuseCodexView: View {
         return route
     }
 
+    /// 已装的其它运行时（python / node …），空则不显示该行。
+    private var codexOtherText: String {
+        guard let codexStatus else { return "" }
+        return codexStatus.otherRuntimeIDs.joined(separator: "、")
+    }
+
+    private var codexDetailText: String {
+        guard let codexStatus else { return "正在检测 codex 运行环境…" }
+        return codexStatus.detailNote
+    }
+
     var body: some View {
         NanoMusePage(title: panel?.title ?? "Codex") {
             if let panel {
@@ -159,6 +170,7 @@ struct NanoMuseCodexView: View {
             modelCard
         case .codex:
             statusCard
+            NanoMuseCaption(text: codexDetailText)
             if !displayLines.isEmpty { logCard }
             advancedCard
         case .packaged:
@@ -258,6 +270,10 @@ struct NanoMuseCodexView: View {
             NanoMuseRowLabel(title: "状态", value: codexStatusText, titleColor: .primary, chevron: false)
             NanoMuseRowDivider()
             NanoMuseRowLabel(title: "已安装", value: codexInstallText, titleColor: .secondary, chevron: false)
+            if !codexOtherText.isEmpty {
+                NanoMuseRowDivider()
+                NanoMuseRowLabel(title: "其它运行时", value: codexOtherText, titleColor: .secondary, chevron: false)
+            }
             NanoMuseRowDivider()
             NanoMuseRowLabel(title: "调用", value: codexRouteText, titleColor: .secondary, chevron: false)
 

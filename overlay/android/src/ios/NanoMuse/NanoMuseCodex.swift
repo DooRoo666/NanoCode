@@ -52,10 +52,11 @@ public enum NanoMuseCodex {
         public var headline: String {
             if nativePath != nil, nativeRuns { return "已就绪 · 原生" }
             if alpinePath != nil, alpineRuns { return "已就绪 · Alpine" }
-            if nativePath != nil { return "已安装 · 待验证" }
-            if alpinePath != nil { return "已安装 · 不可运行" }
-            if (!NanoMuseNativeRuntime.installedIDs().isEmpty) { return "已安装 · 待验证" }
-            return "未安装"
+            if nativePath != nil { return "未就绪 · 无法执行" }
+            if alpinePath != nil { return "未就绪 · 无法执行" }
+            // 其它运行时（python/node…）已装 ≠ codex 已装：以前这里用 installedIDs 判空，
+            // 装了 python 就把 codex 报成「已安装 · 待验证」，与实际相反。
+            return "未安装 · 无 codex"
         }
 
         /// 「已装」说明：只写实际存在的那几条，缺失的那条不再当成错误提示。
@@ -74,20 +75,37 @@ public enum NanoMuseCodex {
         public var installLine: String {
             var parts: [String] = []
             if let nativePath {
-                parts.append("原生 \(sizeLabel(nativeSize))\(nativeRuns ? " 可运行" : " 未验证")")
+                parts.append("原生 \(sizeLabel(nativeSize))")
                 _ = nativePath
             }
             if alpinePath != nil {
-                parts.append("Alpine \(sizeLabel(alpineSize))\(alpineRuns ? " 可运行" : " 不可运行")")
+                parts.append("Alpine \(sizeLabel(alpineSize))")
             }
             if parts.isEmpty {
-                // 目录里有东西但扫不到可执行文件
-                if (!NanoMuseNativeRuntime.installedIDs().isEmpty) {
-                    return "原生 目录已有内容，未找到可执行 codex"
-                }
-                return "未安装"
+                // 行值保持极短：上游 NanoMuseRowLabel 是单行中部省略，
+                // 长句会被截成相反语义（「…找到可执行 codex」）。
+                return "无 codex"
             }
             return parts.joined(separator: " · ")
+        }
+
+        /// codex 之外已装的其他运行时 id（python、node…）。
+        /// 只用来解释「环境有了、但没 codex」，不参与 codex 是否安装的判定。
+        public var otherRuntimeIDs: [String] {
+            NanoMuseNativeRuntime.installedIDs().filter { $0.lowercased() != "codex" }
+        }
+
+        /// 卡片下方的整句说明：有什么、缺什么、下一步做什么，可换行，不用省略号。
+        public var detailNote: String {
+            if nativeRuns || alpineRuns { return "codex 已就绪，可直接对话调用。" }
+            if nativePath != nil || alpinePath != nil {
+                return "codex 文件在，但执行失败（已安装·未就绪）。点「重新检测」看下方日志里的 rc 与报错。"
+            }
+            let others = otherRuntimeIDs
+            if others.isEmpty {
+                return "没有 codex，也没有其它运行时。点「原生安装（推荐）」下载 codex。"
+            }
+            return "已装其它运行时：\(others.joined(separator: "、"))；但没有 codex 可执行文件。点「原生安装（推荐）」下载。"
         }
     }
 
