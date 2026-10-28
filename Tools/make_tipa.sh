@@ -37,8 +37,18 @@ fi
 # 少了它的表现是 clang-16 报
 #   Library not loaded: @rpath/libiosexec.1.dylib / sandbox blocked mmap()
 # 极难从现象倒推回权限，所以在构建期直接拦住。
-if ! grep -q "<key>com.apple.security.cs.disable-library-validation</key>" "$RUNTIME_ENT"; then
-  echo "error: runtime 模板缺 disable-library-validation（TheosRuntime 会加载失败）" >&2
+# 与 MT-Agent 逐字对齐：她的主程序和运行时二进制用**同一份** 14 键权限表，
+# 里面既没有 disable-library-validation，也没有 com.apple.container-required。
+# 实测过：多带 disable-library-validation / container-required 的 1068B 版本签名出
+# 来的 python3 能在容器里启动，却mmap 不了自己的 Python.framework（sandbox
+# blocked mmap）；换成她那份 1036B 的原版二进制，同一路径同一 framework 立刻能跑。
+# 所以这里改成：模板必须与 MT 一致，多一个键都报错。
+if grep -q "<key>com.apple.security.cs.disable-library-validation</key>" "$RUNTIME_ENT"; then
+  echo "error: runtime 模板多了 disable-library-validation（实测会让运行时 mmap 失败）" >&2
+  exit 1
+fi
+if grep -q "<key>com.apple.container-required</key>" "$RUNTIME_ENT"; then
+  echo "error: runtime 模板含无效键 com.apple.container-required" >&2
   exit 1
 fi
 
@@ -199,7 +209,7 @@ fi
 # 这个文件既是我们给 codex / TheosRuntime 签名的模板，也是签名页展示的权限清单。
 # 它包含 extended-virtual-addressing（对齐 MT-Agent 原版，clang/ld 需要）。
 cp "$RUNTIME_ENT" "$TARGET/entitlements.plist"
-echo "   entitlements.plist ← Tools/entitlements-runtime.plist（含 disable-library-validation + EVA）"
+echo "   entitlements.plist ← Tools/entitlements-runtime.plist（与 MT-Agent 逐字同构的 14 键表）"
 
 echo "== 0c/4 运行时：不再随包，改为运行时下载（对齐 MT-Agent 的"自身小"） =="
 # 原来这里把 /usr/local/bin 的上百个工具（rt-bin 18MB）和它们依赖的 dylib

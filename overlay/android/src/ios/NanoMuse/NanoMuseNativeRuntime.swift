@@ -996,7 +996,13 @@ enum NanoMuseNativeRuntime {
             // 我们之前用 --entitlements（哪怕内容是空字典）会多出第 4 个 blob
             // （entitlements，1076 字节，等于 App 自己的权限表），AMFI 直接判
             // code signature invalid。所以这里只发 codex-sign <path>，失败就保留原签名。
-            if fileType == 6 || fileType == 8 {
+            // 按路径兜底：Python.framework/Python 这类框架二进制实测被 machOFileType
+            // 误判成可执行文件，于是走了 --entitlements 分支，多出第 4 个 1076B 权限
+            // blob → AMFI 判 invalid。路径判定比头解析可靠，两个条件取或。
+            let lowerPath = url.path.lowercased()
+            let looksLikeLibrary = lowerPath.contains(".framework/") || lowerPath.hasSuffix(".dylib")
+                || lowerPath.hasSuffix(".so")
+            if looksLikeLibrary || fileType == 6 || fileType == 8 {
                 let plain = await Task.detached(priority: .utility) {
                     NanoMuseHelperRunner.run("codex-sign", arguments: [url.path], timeout: 60)
                 }.value
