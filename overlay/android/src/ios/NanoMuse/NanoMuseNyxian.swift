@@ -431,17 +431,15 @@ enum NanoMuseNyxian {
         return nil
     }
 
-    /// 把一个 Swift 源文件编译成 .o。依次尝试多组参数，返回第一组成功的组合。
+    /// 把一个 Swift 源文件编译成 .o。
+    /// 参数组可由 Documents/nyxian-swift-args.txt 注入（行格式：ID|foundation|额外参数），
+    /// 这样调参数不用重新出包。
     static func swiftProbe(loaded: Loaded, work: URL) -> (ok: Bool, log: String) {
         let fm = FileManager.default
         let src = work.appendingPathComponent("probe.swift")
         let obj = work.appendingPathComponent("probe_swift.o")
         let cache = work.appendingPathComponent("modulecache", isDirectory: true)
         try? fm.createDirectory(at: cache, withIntermediateDirectories: true)
-        try? fm.removeItem(at: obj)
-        let code = "import Foundation\nlet n: Int = 42\nprint(\"swift ok \\(n)\")\n"
-        do { try code.write(to: src, atomically: true, encoding: .utf8) }
-        catch { return (false, "写 probe.swift 失败: \(error)") }
         guard let sdk = detectSDK() else { return (false, "没有 SDK，Swift 无法编译") }
         let sdkPath = sdk.path
         let res = detectSwiftResources()
@@ -452,21 +450,44 @@ enum NanoMuseNyxian {
                                 "-module-cache-path", cache.path]
         if let res { common += ["-resource-dir", res.path] }
         let tail = ["-c", src.path, "-o", obj.path]
-        let variants: [(String, [String])] = [
-            ("A -sdk", common + tail),
-            ("B +isysroot", ["-isysroot", sdkPath] + common + tail),
-            ("C 裸 -sdk", ["-sdk", sdkPath] + tail),
-            ("D 仅 isysroot", ["-isysroot", sdkPath, "-target", "arm64-apple-ios16.0"] + tail),
+        let bhism = ["-Xcc", "-fbuiltin-headers-in-system-modules"]
+        let feature = ["-Xcc", "-fmodule-feature", "-Xcc",
+                       "found_incompatible_headers__check_search_paths"]
+        var variants: [(String, String, [String])] = [
+            ("A 内置头", "foundation", common + bhism + tail),
+            ("B 无Foundation", "plain", common + tail),
+            ("C 内置头+无Foundation", "plain", common + bhism + tail),
+            ("D 显式feature", "foundation", common + feature + tail),
+            ("E 基线", "foundation", common + tail),
         ]
-        for (name, args) in variants {
+        let cfg = documents.appendingPathComponent("nyxian-swift-args.txt")
+        if let text = try? String(contentsOf: cfg, encoding: .utf8) {
+            for raw in text.split(separator: "\n") {
+                let line = raw.trimmingCharacters(in: .whitespaces)
+                if line.isEmpty || line.hasPrefix("#") { continue }
+                let parts = line.components(separatedBy: "|")
+                guard parts.count >= 2 else { continue }
+                let extra = parts.count > 2
+                    ? parts[2].split(separator: " ").map(String.init) : []
+                variants.insert(("注入:" + parts[0], parts[1], common + extra + tail), at: 0)
+            }
+        }
+        for (name, kind, args) in variants {
+            try? fm.removeItem(at: obj)
+            let code: String = kind == "plain"
+                ? "let n: Int = 42\nprint(\"swift ok \\(n)\")\n"
+                : "import Foundation\nlet n: Int = 42\nprint(\"swift ok \\(n)\")\n"
+            do { try code.write(to: src, atomically: true, encoding: .utf8) }
+            catch { return (false, "写 probe.swift 失败: \(error)") }
             let r = loaded.run(args, swift: true)
             let size = ((try? fm.attributesOfItem(atPath: obj.path))?[.size] as? NSNumber)?.intValue ?? 0
             log.append("[\(name)] ok=\(r.ok) obj=\(size)B")
             if size > 0 {
-                log.append("参数: " + args.joined(separator: " "))
+                log.append("可用参数: " + args.joined(separator: " "))
                 return (true, log.joined(separator: "\n"))
             }
-            for line in r.log.split(separator: "\n").prefix(12) { log.append("    " + String(line)) }
+            let hits = r.log.split(separator: "\n").filter { $0.lowercased().contains("error") }
+            for line in hits.prefix(5) { log.append("    " + String(line)) }
         }
         return (false, log.joined(separator: "\n"))
     }
