@@ -478,9 +478,17 @@ enum NanoMuseNyxian {
     /// 在 fork 出的子进程里执行编译。
     /// CoreCompiler 在失败路径上有 CFRelease(NULL) 的坑，会把宿主进程直接带崩；
     /// 放进子进程后崩溃只杀子进程，父进程拿到信号号，自检不会闪退。
+    /// iOS 的 Swift Darwin overlay 把 fork() 标成 unavailable（编译期就报错），
+    /// 这里 dlsym 取地址绕过声明检查；运行时被系统拒绝就退回进程内执行。
+    private static func callFork() -> Int32 {
+        guard let h = dlopen(nil, RTLD_NOW), let s = dlsym(h, "fork") else { return -1 }
+        let sym = unsafeBitCast(s, to: (@convention(c) () -> Int32).self)
+        return sym()
+    }
+
     static func isoRun(loaded: Loaded, args: [String], swift: Bool, work: URL) -> (ok: Bool, log: String) {
         let out = work.appendingPathComponent("iso-" + String(UUID().uuidString.prefix(8)) + ".txt")
-        let pid = fork()
+        let pid: Int32 = callFork()
         if pid == 0 {
             let r = loaded.run(args, swift: swift)
             let text = (r.ok ? "OK" : "ERR") + "\n" + r.log
@@ -488,10 +496,23 @@ enum NanoMuseNyxian {
             _exit(0)
         }
         if pid < 0 {
-            return (false, "fork 失败(errno=\(errno))，退回进程内执行：" + args.joined(separator: " "))
+            // fork 被系统拒绝：退回进程内执行（可能崩，但至少不丢功能）
+            return loaded.run(args, swift: swift)
         }
         var status: Int32 = 0
-        _ = waitpid(pid, &status, 0)
+        var ticks = 0
+        while true {
+            let r = waitpid(pid, &status, WNOHANG)
+            if r == pid { break }
+            if r < 0 { break }
+            usleep(200_000)
+            ticks += 1
+            if ticks > 900 {   // 180s 兜底，避免子进程卡死拖住自检
+                _ = kill(pid, SIGKILL)
+                _ = waitpid(pid, &status, 0)
+                return (false, "子进程超时 180s 被强杀")
+            }
+        }
         if let text = try? String(contentsOf: out, encoding: .utf8) {
             _ = try? FileManager.default.removeItem(at: out)
             var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
