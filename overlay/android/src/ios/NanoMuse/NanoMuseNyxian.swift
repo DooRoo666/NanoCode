@@ -491,7 +491,7 @@ enum NanoMuseNyxian {
                 let parts = line.components(separatedBy: "|")
                 if parts.count < 2 { continue }
                 let extra = parts.count > 2 ? parts[2].split(separator: " ").map(String.init) : []
-                variants.insert(("注入:" + parts[0], parts[1], extra), at: 0)
+                variants.append(("注入:" + parts[0], parts[1], extra))
             }
         }
         for (name, kind, rawArgs) in variants {
