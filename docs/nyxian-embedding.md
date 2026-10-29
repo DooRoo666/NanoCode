@@ -10,7 +10,8 @@
 
 ## 2. 设备与环境事实
 
-- 设备：iPhone，iOS 26.x，TrollStore 环境；本 App = `Minis.app`（nanoMuse）
+- 设备：**iPhone 14 Pro（A16，arm64e），iOS 16.x**，TrollStore 环境；本 App = `Minis.app`（nanoMuse）
+- 注意：设备上的 SDK 是 `iPhoneOS26.5.sdk`（只是 SDK 版本号），**部署目标仍是 ios16.0**（探测参数已按 ios16.0）
 - App 包路径（会随重装变化）：
   `/private/var/containers/Bundle/Application/5593ECD4-90C1-4C7B-85CE-58387BC3BBFF/Minis.app`
   每次重装 UUID 变，从 `nyxian-diag.txt` 第 2 行 `bundle:` 读最新值
@@ -106,7 +107,7 @@ for n in z.namelist():
 - CodexApp 的 unzip **拒绝** `/private/var/containers` 路径 → 解包到 iSH 路径（`/var/mobile/Documents/alpine-rootfs/data/...`）再进 iSH 处理
 - **AMFI 只信任 bundle 内的二进制**：`Documents/` 下的 framework 任何签名都 `code signature invalid`（外部 dylib 一律不信任；TrollStore 的白名单只覆盖主 Bundle）
 - 运行时因此必须在 **bundle 内** `Runtimes/frameworks`（CI 用 `if: always()` 从缓存的 `runtime/` 拷入）
-- iOS 26 SDK 允许 `arm64e` 的 Swift 模块被 `-target arm64` 导入（已实测，这不构成 errSecUnknownFormat）
+- iOS 26 SDK（文件版本）允许 `arm64e` 的 Swift 模块被 `-target arm64` 导入（已实测，这不构成 errSecUnknownFormat）
 - iSH 内有 `ldid`（`/usr/local/bin/ldid`），`ldid -S <macho>` 可 ad-hoc 重签
 
 ## 10. 进度与待办
@@ -140,7 +141,7 @@ for n in z.namelist():
 | 签名 + tipa | 95% | `tipa_build` 现成 + TrollStore trust cache |
 | 不闪退 | 85% | fork 可用性未知，已加回退/超时 |
 
-**综合 ≈ 8 成**。剩余风险：①framework 与 support libs 版本错配（换成配套一套即可）；②iOS 26 拒绝 fork（退进程内，稳定性下降）；③自编译 App 的运行校验更严（TrollStore 安装可绕过）。
+**综合 ≈ 8 成**。剩余风险：①framework 与 support libs 版本错配（换成配套一套即可）；②iOS 16 拒绝 fork（**概率比 iOS 26 低**，TrollStore 环境下更可能放行；退进程内即稳定性下降）；③自编译 App 的签名校验（iOS 16 + TrollStore 安装可绕过，比 iOS 26 宽松）。
 
 ## 12. 时间线
 
@@ -150,3 +151,4 @@ for n in z.namelist():
 - `ae5b58c` fork 改 dlsym + 180s 超时强杀 → 构建中
 
 - 08:40 ae5b58c 构建成功（fork 隔离 + 包内运行时预置 + 参数注入修复）→ 待装包验证
+- 08:55 更正设备事实：iPhone 14 Pro / iOS 16.x（非 iOS 26），部署目标 ios16.0；fork 与签名风险相应下调
