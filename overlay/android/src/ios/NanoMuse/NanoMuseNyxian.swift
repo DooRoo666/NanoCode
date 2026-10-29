@@ -431,34 +431,57 @@ enum NanoMuseNyxian {
         return nil
     }
 
-    /// 把一个 Swift 源文件编译成 .o。
-    /// 参数组可由 Documents/nyxian-swift-args.txt 注入（行格式：ID|foundation|额外参数），
-    /// 这样调参数不用重新出包。
+    /// Swift 编译探测：编译 + 链接。
+    /// 参数组可从 Documents/nyxian-swift-args.txt 注入（ID|source|参数；参数含 %SRC% 等占位符时按模板整组替换）。
+    /// 源可用 Documents/nyxian-probe.swift 覆盖（source 写 file）。
     static func swiftProbe(loaded: Loaded, work: URL) -> (ok: Bool, log: String) {
         let fm = FileManager.default
         let src = work.appendingPathComponent("probe.swift")
         let obj = work.appendingPathComponent("probe_swift.o")
+        let bin = work.appendingPathComponent("probe_swift_bin")
         let cache = work.appendingPathComponent("modulecache", isDirectory: true)
+        let overrideSrc = documents.appendingPathComponent("nyxian-probe.swift")
         try? fm.createDirectory(at: cache, withIntermediateDirectories: true)
         guard let sdk = detectSDK() else { return (false, "没有 SDK，Swift 无法编译") }
         let sdkPath = sdk.path
-        let res = detectSwiftResources()
-        var log: [String] = ["SDK: \(sdkPath)", "资源: \(res?.path ?? "无")"]
-        var common: [String] = ["-target", "arm64-apple-ios16.0", "-sdk", sdkPath,
-                                "-I", sdkPath + "/usr/lib/swift",
-                                "-L", sdkPath + "/usr/lib/swift",
-                                "-module-cache-path", cache.path]
-        if let res { common += ["-resource-dir", res.path] }
+        let resDir = detectSwiftResources()?.path ?? documents.appendingPathComponent("nyxian/Shared").path
+        let swiftLib = sdkPath + "/usr/lib/swift"
+        let frameworks = sdkPath + "/System/Library/Frameworks"
+        var log: [String] = ["SDK: \(sdkPath)", "资源: \(resDir)"]
+        func expand(_ raw: String) -> String {
+            var t = raw
+            t = t.replacingOccurrences(of: "%SRC%", with: src.path)
+            t = t.replacingOccurrences(of: "%OBJ%", with: obj.path)
+            t = t.replacingOccurrences(of: "%BIN%", with: bin.path)
+            t = t.replacingOccurrences(of: "%SDK%", with: sdkPath)
+            t = t.replacingOccurrences(of: "%RES%", with: resDir)
+            t = t.replacingOccurrences(of: "%WORK%", with: work.path)
+            return t
+        }
+        func content(_ kind: String) -> String {
+            switch kind {
+            case "plain":
+                return "let n: Int = 42\nprint(\"plain ok \\(n)\")\n"
+            case "uikit":
+                return "import UIKit\nlet v = UIView(frame: .zero)\nprint(\"uikit ok\", v.bounds.width)\n"
+            case "swiftui":
+                return "import SwiftUI\nstruct V: View { var body: some View { Text(\"hi\") } }\nlet _ = V.self\n"
+            case "file":
+                return (try? String(contentsOf: overrideSrc, encoding: .utf8)) ?? "let n: Int = 1\nprint(n)\n"
+            default:
+                return "import Foundation\nlet d = Date()\nprint(\"foundation ok \\(d.timeIntervalSince1970 > 0)\")\n"
+            }
+        }
+        let xres = ["-Xcc", "-resource-dir", "-Xcc", resDir]
+        let common: [String] = ["-target", "arm64-apple-ios16.0", "-sdk", sdkPath, "-isysroot", sdkPath,
+                                "-F", frameworks, "-I", swiftLib, "-L", swiftLib,
+                                "-module-cache-path", cache.path, "-resource-dir", resDir]
         let tail = ["-c", src.path, "-o", obj.path]
-        let bhism = ["-Xcc", "-fbuiltin-headers-in-system-modules"]
-        let feature = ["-Xcc", "-fmodule-feature", "-Xcc",
-                       "found_incompatible_headers__check_search_paths"]
         var variants: [(String, String, [String])] = [
-            ("A 内置头", "foundation", common + bhism + tail),
-            ("B 无Foundation", "plain", common + tail),
-            ("C 内置头+无Foundation", "plain", common + bhism + tail),
-            ("D 显式feature", "foundation", common + feature + tail),
-            ("E 基线", "foundation", common + tail),
+            ("A Foundation", "foundation", xres + tail),
+            ("B UIKit", "uikit", xres + tail),
+            ("C SwiftUI", "swiftui", xres + tail),
+            ("D 文件", "file", xres + tail),
         ]
         let cfg = documents.appendingPathComponent("nyxian-swift-args.txt")
         if let text = try? String(contentsOf: cfg, encoding: .utf8) {
@@ -466,30 +489,57 @@ enum NanoMuseNyxian {
                 let line = raw.trimmingCharacters(in: .whitespaces)
                 if line.isEmpty || line.hasPrefix("#") { continue }
                 let parts = line.components(separatedBy: "|")
-                guard parts.count >= 2 else { continue }
-                let extra = parts.count > 2
-                    ? parts[2].split(separator: " ").map(String.init) : []
-                variants.insert(("注入:" + parts[0], parts[1], common + extra + tail), at: 0)
+                if parts.count < 2 { continue }
+                let extra = parts.count > 2 ? parts[2].split(separator: " ").map(String.init) : []
+                variants.insert(("注入:" + parts[0], parts[1], extra), at: 0)
             }
         }
-        for (name, kind, args) in variants {
+        for (name, kind, rawArgs) in variants {
             try? fm.removeItem(at: obj)
-            let code: String = kind == "plain"
-                ? "let n: Int = 42\nprint(\"swift ok \\(n)\")\n"
-                : "import Foundation\nlet n: Int = 42\nprint(\"swift ok \\(n)\")\n"
-            do { try code.write(to: src, atomically: true, encoding: .utf8) }
+            try? fm.removeItem(at: bin)
+            do { try content(kind).write(to: src, atomically: true, encoding: .utf8) }
             catch { return (false, "写 probe.swift 失败: \(error)") }
+            let isTemplate = rawArgs.contains { $0.contains("%") }
+            let args = isTemplate ? rawArgs.map(expand) : common + rawArgs.map(expand)
             let r = loaded.run(args, swift: true)
             let size = ((try? fm.attributesOfItem(atPath: obj.path))?[.size] as? NSNumber)?.intValue ?? 0
-            log.append("[\(name)] ok=\(r.ok) obj=\(size)B")
+            log.append("[\(name)/\(kind)] ok=\(r.ok) obj=\(size)B")
             if size > 0 {
-                log.append("可用参数: " + args.joined(separator: " "))
+                log.append("编译成功参数: " + args.joined(separator: " "))
+                log.append("--- 链接")
+                log.append(swiftLink(loaded: loaded, obj: obj, bin: bin, sdk: sdkPath, res: resDir, work: work))
                 return (true, log.joined(separator: "\n"))
             }
             let hits = r.log.split(separator: "\n").filter { $0.lowercased().contains("error") }
-            for line in hits.prefix(5) { log.append("    " + String(line)) }
+            for line in hits.prefix(4) { log.append("    " + String(line)) }
         }
         return (false, log.joined(separator: "\n"))
+    }
+
+    /// 把 .o 链接成可执行文件（Swift 需要拉 swiftCore 等 tbd）
+    static func swiftLink(loaded: Loaded, obj: URL, bin: URL, sdk: String, res: String, work: URL) -> String {
+        let fm = FileManager.default
+        let lib = sdk + "/usr/lib/swift"
+        let fw = sdk + "/System/Library/Frameworks"
+        var out: [String] = []
+        let sets: [[String]] = [
+            ["-sdk", sdk, "-target", "arm64-apple-ios16.0", "-L", lib, "-F", fw, "-o", bin.path, obj.path],
+            ["-sdk", sdk, "-target", "arm64-apple-ios16.0", "-L", lib, "-L", res + "/swift/iphoneos", "-F", fw, "-o", bin.path, obj.path],
+            ["-sdk", sdk, "-target", "arm64-apple-ios16.0", "-L", lib, "-F", fw, "-lswiftCore", "-o", bin.path, obj.path],
+        ]
+        for (i, args) in sets.enumerated() {
+            try? fm.removeItem(at: bin)
+            let r = loaded.run(args, swift: true)
+            let size = ((try? fm.attributesOfItem(atPath: bin.path))?[.size] as? NSNumber)?.intValue ?? 0
+            out.append("[(\(i + 1))] ok=\(r.ok) bin=\(size)B")
+            if size > 0 {
+                out.append("链接成功参数: " + args.joined(separator: " "))
+                return out.joined(separator: "\n")
+            }
+            let hits = r.log.split(separator: "\n").filter { $0.lowercased().contains("error") }
+            for line in hits.prefix(3) { out.append("    " + String(line)) }
+        }
+        return out.joined(separator: "\n")
     }
 
     // MARK: - 小工具
