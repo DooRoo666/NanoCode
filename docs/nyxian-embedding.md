@@ -148,3 +148,5 @@ for n in z.namelist():
 - `778f12e` 加 fork 隔离 → **构建失败**：`'fork()' is unavailable`（Swift Darwin overlay 禁用）
 - `63828db` 修参数注入（`-c`/`-o`）、加开关文件
 - `ae5b58c` fork 改 dlsym + 180s 超时强杀 → 构建中
+
+- 08:40 ae5b58c 构建成功（fork 隔离 + 包内运行时预置 + 参数注入修复）→ 待装包验证
