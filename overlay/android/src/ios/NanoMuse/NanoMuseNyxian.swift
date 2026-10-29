@@ -410,6 +410,46 @@ enum NanoMuseNyxian {
         return text
     }
 
+    /// 监听参数文件：App 只要还活在前台，改 Documents/nyxian-swift-args.txt 就会重跑 Swift 探测，
+    /// 不用杀进程重启（迭代编译参数时省掉每次重开 App）。
+    static var swiftWatch: Task<Void, Never>?
+
+    static func startSwiftWatch() {
+        guard swiftWatch == nil else { return }
+        let fm0 = FileManager.default
+        let cfg = documents.appendingPathComponent("nyxian-swift-args.txt")
+        if !fm0.fileExists(atPath: cfg.path) {
+            try? "# ID|source|额外参数\n".write(to: cfg, atomically: true, encoding: .utf8)
+        }
+        swiftWatch = Task.detached(priority: .utility) {
+            let fm = FileManager.default
+            let out = documents.appendingPathComponent("nyxian-diag.txt")
+            let work = documents.appendingPathComponent("nyxian-out", isDirectory: true)
+            func stamp() -> TimeInterval {
+                let a = (try? fm.attributesOfItem(atPath: cfg.path)) as? [FileAttributeKey: Any] ?? [:]
+                return (a[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            }
+            var last = stamp()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let now = stamp()
+                if now != last {
+                    last = now
+                    try? fm.createDirectory(at: work, withIntermediateDirectories: true)
+                    guard case .success(let toolchain) = load() else { continue }
+                    let r = swiftProbe(loaded: toolchain, work: work)
+                    let text = "\n=== 手动触发 Swift 探测 \(ISO8601DateFormatter().string(from: Date())) ===\n"
+                        + r.log + "\n" + (r.ok ? "SWIFT_OK: swiftc 可用 ✅" : "SWIFT_FAIL: swiftc 未打通 ❌") + "\n"
+                    if let handle = try? FileHandle(forWritingTo: out) {
+                        handle.seekToEndOfFile()
+                        handle.write(text.data(using: .utf8) ?? Data())
+                        try? handle.close()
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Swift
 
     /// 找 swiftc 需要的资源目录（clang 内建头 / swift migrator / libclang_rt）。
