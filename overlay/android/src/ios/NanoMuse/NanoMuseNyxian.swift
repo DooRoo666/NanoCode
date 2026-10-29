@@ -551,10 +551,10 @@ enum NanoMuseNyxian {
                                 "-module-cache-path", cache.path, "-resource-dir", resDir]
         let tail = ["-c", src.path, "-o", obj.path]
         var variants: [(String, String, [String])] = [
-            ("A Foundation", "foundation", xres + tail),
-            ("B UIKit", "uikit", xres + tail),
-            ("C SwiftUI", "swiftui", xres + tail),
-            ("D 文件", "file", xres + tail),
+            ("A Foundation", "foundation", xres),
+            ("B UIKit", "uikit", xres),
+            ("C SwiftUI", "swiftui", xres),
+            ("D 文件", "file", xres),
         ]
         let cfg = documents.appendingPathComponent("nyxian-swift-args.txt")
         if let text = try? String(contentsOf: cfg, encoding: .utf8) {
@@ -573,7 +573,8 @@ enum NanoMuseNyxian {
             do { try content(kind).write(to: src, atomically: true, encoding: .utf8) }
             catch { return (false, "写 probe.swift 失败: \(error)") }
             let isTemplate = rawArgs.contains { $0.contains("%") }
-            let args = isTemplate ? rawArgs.map(expand) : common + rawArgs.map(expand)
+            // 模板行（含占位符）自己负责完整参数；普通注入行只写额外 flag，源/产物参数统一补在末尾
+            let args = isTemplate ? rawArgs.map(expand) : common + rawArgs.map(expand) + tail
             let r = isoRun(loaded: loaded, args: args, swift: true, work: work)
             let size = ((try? fm.attributesOfItem(atPath: obj.path))?[.size] as? NSNumber)?.intValue ?? 0
             log.append("[\(name)/\(kind)] ok=\(r.ok) obj=\(size)B")
