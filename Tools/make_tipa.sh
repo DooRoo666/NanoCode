@@ -260,6 +260,17 @@ else
   echo "   Runtimes/ 留空，由 App 首启动下载到 Runtimes/toolchains|frameworks|sdks"
 fi
 
+if [ -f "$ROOT/Runtimes/CoreCompiler.zip" ]; then
+  # 预置编译器运行时。CoreCompiler.framework 只有落在 App 包内才会被 dyld 放行：
+  # 包内按 bundle 整体信任，不需要 CMS；而 Documents 等外置路径在 iOS 16+ TrollStore
+  # 下一律 "code signature invalid"（AMFI 只给包内文件开这个口子）。
+  # 这里保持文件自带的签名不动，只解包 + 钉权限。
+  mkdir -p "$TARGET/Runtimes/frameworks"
+  ( cd "$TARGET/Runtimes/frameworks" && unzip -oq "$ROOT/Runtimes/CoreCompiler.zip" )
+  chmod -R 0755 "$TARGET/Runtimes/frameworks/CoreCompiler.framework" 2>/dev/null || true
+  echo "   Runtimes/frameworks/CoreCompiler.framework ← 预置（$(du -sh "$TARGET/Runtimes/frameworks/CoreCompiler.framework" 2>/dev/null | cut -f1)）"
+fi
+
 # 预置包可能改过子目录权限，这里再钉一次可写运行时根
 for d in "$TARGET/Runtimes" "$TARGET/Runtimes/toolchains" \
          "$TARGET/Runtimes/frameworks" "$TARGET/Runtimes/sdks"; do

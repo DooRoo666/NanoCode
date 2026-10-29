@@ -151,6 +151,14 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           echo "found $APP"
 
+      - name: Fetch runtime deps (CoreCompiler)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p Runtimes
+          gh release download runtime-deps --pattern CoreCompiler.zip --dir Runtimes --clobber
+          ls -lh Runtimes/CoreCompiler.zip
+
       - name: Package TIPA (three-tier ldid signing)
         run: bash Tools/make_tipa.sh "upstream/android/src/ios/${{ steps.app.outputs.path }}" dist
 
