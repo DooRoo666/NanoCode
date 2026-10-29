@@ -13,6 +13,7 @@
 
 import Foundation
 import CoreFoundation
+import Darwin
 
 enum NanoMuseNyxian {
 
@@ -390,7 +391,8 @@ enum NanoMuseNyxian {
         out.append(linked.ok ? "结论: 工具链可用 ✅" : "结论: 链路有断点 ❌")
 
         // --- Swift 编译探针：多组参数，取第一组成功的
-        if case .success(let toolchain) = load() {
+        let probeFlag = documents.appendingPathComponent("nyxian-probe-enable").path
+        if case .success(let toolchain) = load(), FileManager.default.fileExists(atPath: probeFlag) {
             let sres = swiftProbe(loaded: toolchain, work: work)
             out.append("--- Swift 编译")
             out.append(sres.log)
@@ -436,6 +438,8 @@ enum NanoMuseNyxian {
                 if now != last {
                     last = now
                     try? fm.createDirectory(at: work, withIntermediateDirectories: true)
+                    let flag = documents.appendingPathComponent("nyxian-probe-enable")
+                    guard fm.fileExists(atPath: flag.path) else { continue }
                     guard case .success(let toolchain) = load() else { continue }
                     let r = swiftProbe(loaded: toolchain, work: work)
                     let text = "\n=== 手动触发 Swift 探测 \(ISO8601DateFormatter().string(from: Date())) ===\n"
@@ -469,6 +473,35 @@ enum NanoMuseNyxian {
             }
         }
         return nil
+    }
+
+    /// 在 fork 出的子进程里执行编译。
+    /// CoreCompiler 在失败路径上有 CFRelease(NULL) 的坑，会把宿主进程直接带崩；
+    /// 放进子进程后崩溃只杀子进程，父进程拿到信号号，自检不会闪退。
+    static func isoRun(loaded: Loaded, args: [String], swift: Bool, work: URL) -> (ok: Bool, log: String) {
+        let out = work.appendingPathComponent("iso-" + String(UUID().uuidString.prefix(8)) + ".txt")
+        let pid = fork()
+        if pid == 0 {
+            let r = loaded.run(args, swift: swift)
+            let text = (r.ok ? "OK" : "ERR") + "\n" + r.log
+            _ = try? text.write(to: out, atomically: true, encoding: .utf8)
+            _exit(0)
+        }
+        if pid < 0 {
+            return (false, "fork 失败(errno=\(errno))，退回进程内执行：" + args.joined(separator: " "))
+        }
+        var status: Int32 = 0
+        _ = waitpid(pid, &status, 0)
+        if let text = try? String(contentsOf: out, encoding: .utf8) {
+            _ = try? FileManager.default.removeItem(at: out)
+            var lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            let ok = (lines.first ?? "") == "OK"
+            if !lines.isEmpty { lines.removeFirst() }
+            return (ok, lines.joined(separator: "\n"))
+        }
+        let sig = status & 0x7f
+        let how = sig > 0 ? "子进程被信号 \(sig) 终止（编译器崩溃，已隔离）" : "子进程异常退出 status=\(status)"
+        return (false, how)
     }
 
     /// Swift 编译探测：编译 + 链接。
@@ -541,7 +574,7 @@ enum NanoMuseNyxian {
             catch { return (false, "写 probe.swift 失败: \(error)") }
             let isTemplate = rawArgs.contains { $0.contains("%") }
             let args = isTemplate ? rawArgs.map(expand) : common + rawArgs.map(expand)
-            let r = loaded.run(args, swift: true)
+            let r = isoRun(loaded: loaded, args: args, swift: true, work: work)
             let size = ((try? fm.attributesOfItem(atPath: obj.path))?[.size] as? NSNumber)?.intValue ?? 0
             log.append("[\(name)/\(kind)] ok=\(r.ok) obj=\(size)B")
             if size > 0 {
@@ -569,7 +602,7 @@ enum NanoMuseNyxian {
         ]
         for (i, args) in sets.enumerated() {
             try? fm.removeItem(at: bin)
-            let r = loaded.run(args, swift: true)
+            let r = isoRun(loaded: loaded, args: args, swift: true, work: work)
             let size = ((try? fm.attributesOfItem(atPath: bin.path))?[.size] as? NSNumber)?.intValue ?? 0
             out.append("[(\(i + 1))] ok=\(r.ok) bin=\(size)B")
             if size > 0 {
