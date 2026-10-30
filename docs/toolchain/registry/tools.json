@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "note": "工具清单。换成你自己的仓库只需改 sources / install.url。",
+  "sources": {
+    "default": [
+      "https://github.com/DooRoo666/NanoCode/releases/download/tc-v1",
+      "https://ghproxy.net/https://github.com/DooRoo666/NanoCode/releases/download/tc-v1"
+    ],
+    "mirror": [
+      "https://github.com/DooRoo666/NanoCode/releases/download/tc-v1"
+    ]
+  },
+  "tools": {
+    "ld64": {
+      "label": "链接器 ld64.lld",
+      "kind": "bin",
+      "size": "~67KB",
+      "required": true,
+      "description": "LLVM 链接器，.o → 可执行",
+      "install": {
+        "type": "file",
+        "url": "ld64.lld",
+        "saveAs": "bin/ld64.lld"
+      },
+      "probe": {
+        "file": "bin/ld64.lld"
+      }
+    },
+    "ldid": {
+      "label": "签名器 ldid",
+      "kind": "bin",
+      "size": "~268KB",
+      "required": true,
+      "description": "Mach-O 签名，TrollStore 必需",
+      "install": {
+        "type": "file",
+        "url": "ldid",
+        "saveAs": "bin/ldid"
+      },
+      "probe": {
+        "file": "bin/ldid"
+      }
+    },
+    "sdk": {
+      "label": "iOS SDK",
+      "kind": "archive",
+      "size": "~192MB",
+      "required": true,
+      "description": "iPhoneOS26.5 SDK（.tbd + 头文件）",
+      "install": {
+        "type": "archive",
+        "url": "iPhoneOS26.5.sdk.zst"
+      },
+      "probe": {
+        "file": "iPhoneOS26.5.sdk/SDKSettings.json"
+      }
+    },
+    "corecompiler": {
+      "label": "Swift 编译器",
+      "kind": "archive",
+      "size": "~186MB",
+      "required": false,
+      "description": "CoreCompiler.framework（源码→.o）",
+      "install": {
+        "type": "archive",
+        "url": "CoreCompiler.framework.zst"
+      },
+      "probe": {
+        "file": "CoreCompiler.framework/CoreCompiler"
+      }
+    },
+    "swiftrt": {
+      "label": "Swift 运行时资源",
+      "kind": "archive",
+      "size": "~142MB",
+      "required": false,
+      "description": "stdlib 模块与 resource-dir",
+      "install": {
+        "type": "archive",
+        "url": "Shared-swift.zst"
+      },
+      "probe": {
+        "file": "Shared/swift/module.modulemap"
+      }
+    }
+  }
+}
