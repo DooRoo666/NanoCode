@@ -144,8 +144,15 @@ def build(src, name, bundle_id, outdir):
             rc, out = run([cc, "-target", "arm64-apple-ios26.5", "-sdk", sdk,
                            "-emit-object", "-o", obj, src])
         else:
-            rc, out = run(["clang", "-target", "arm64-apple-ios26.5", "-isysroot", sdk,
-                           "-c", "-o", obj, src])
+            # iSH 里的 clang 是 C/C++ 前端，编译 Swift 必然失败（-Wunused-command-line-argument）
+            # Swift → .o 必须由设备端 CoreCompiler 完成；这里给出明确指引而不是产出坏构建
+            say("缺少 Swift 编译器（corecompiler），无法把 .swift 编译成目标文件", "err")
+            say("正确流程：", "info")
+            say("  1) 在设备端用 CoreCompiler 把 .swift 编译为 .o", "info")
+            say("  2) 把 .o 传给本工具链：", "info")
+            say(f"     python3 build.py <你的>.o --name {name}", "info")
+            say("  或直接安装 corecompiler：sh tc.sh install corecompiler", "info")
+            return 5
         if rc != 0 or not os.path.exists(obj):
             say("编译失败：", "err")
             print(out[-2500:])

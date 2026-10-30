@@ -45,19 +45,11 @@ def cmd_install(name):
     if not t: print(f"未知工具: {name}", file=sys.stderr); return 1
     if ready(t):
         print(f"  {name} 已就绪，跳过"); return 0
-    srcs = d.get("sources", {}).get("default", [])
     inst = t.get("install", {})
-    url = inst.get("url", "")
-    urls = [s.rstrip("/") + "/" + url for s in srcs]
-    if not urls:
-        print(f"  {name}: 注册表没有配置 sources", file=sys.stderr); return 1
+    if not inst.get("urls") and not inst.get("url"):
+        print(f"  {name}: 注册表没有配置下载地址", file=sys.stderr); return 1
     print(f"  → 安装 {name} ({t.get('size','?')})")
-    cmd = [sys.executable, os.path.join(ROOT, "engine", "fetch.py")]
-    for u in urls: cmd += ["--url", u]
-    cmd += ["--dest", BASE, "--type", inst.get("type", "file"),
-            "--save-as", inst.get("saveAs", "bin/" + name),
-            "--archive", inst.get("archive", "zip")]
-    if inst.get("sha256"): cmd += ["--sha256", inst["sha256"]]
+    cmd = [sys.executable, os.path.join(ROOT, "engine", "fetch.py"), "--install", name]
     r = subprocess.run(cmd)
     return r.returncode
 

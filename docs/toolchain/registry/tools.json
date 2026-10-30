@@ -1,13 +1,13 @@
 {
-  "version": 1,
-  "note": "工具清单。换成你自己的仓库只需改 sources / install.url。",
+  "version": 2,
+  "note": "SDK 来自公开开源源 xybp888/iOS-SDKs；其余工具来自 DooRoo666/NanoCode releases。sources.default 是 release 下载前缀，工具的 url 相对它拼接；工具也可自带绝对 urls 覆盖。",
   "sources": {
     "default": [
-      "https://github.com/DooRoo666/NanoCode/releases/download/tc-v1",
-      "https://ghproxy.net/https://github.com/DooRoo666/NanoCode/releases/download/tc-v1"
+      "https://github.com/DooRoo666/NanoCode/releases/download/runtime-deps",
+      "https://ghproxy.net/https://github.com/DooRoo666/NanoCode/releases/download/runtime-deps"
     ],
     "mirror": [
-      "https://github.com/DooRoo666/NanoCode/releases/download/tc-v1"
+      "https://github.com/DooRoo666/NanoCode/releases/download/runtime-deps"
     ]
   },
   "tools": {
@@ -19,8 +19,7 @@
       "description": "LLVM 链接器，.o → 可执行",
       "install": {
         "type": "file",
-        "url": "ld64.lld",
-        "saveAs": "bin/ld64.lld"
+        "url": "ld64.lld"
       },
       "probe": {
         "file": "bin/ld64.lld"
@@ -34,8 +33,7 @@
       "description": "Mach-O 签名，TrollStore 必需",
       "install": {
         "type": "file",
-        "url": "ldid",
-        "saveAs": "bin/ldid"
+        "url": "ldid"
       },
       "probe": {
         "file": "bin/ldid"
@@ -44,12 +42,21 @@
     "sdk": {
       "label": "iOS SDK",
       "kind": "archive",
-      "size": "~192MB",
+      "size": "~49MB",
       "required": true,
-      "description": "iPhoneOS26.5 SDK（.tbd + 头文件）",
+      "description": "iPhoneOS26.5 SDK（arm64e，含 Swift 接口）",
       "install": {
         "type": "archive",
-        "url": "iPhoneOS26.5.sdk.zst"
+        "urls": [
+          "https://github.com/xybp888/iOS-SDKs/releases/download/iOS26.5-SDKs/iPhoneOS26.5.sdk.zip",
+          "https://ghproxy.net/https://github.com/xybp888/iOS-SDKs/releases/download/iOS26.5-SDKs/iPhoneOS26.5.sdk.zip"
+        ],
+        "archive": "zip",
+        "sha256": "bed0f155d84e98ad8273b3bd57a0816ae5e772e1aa8539e6d79476221ce33173",
+        "skip_prefixes": [
+          "__MACOSX/"
+        ],
+        "strip_prefix": "iPhoneOS26.5.sdk"
       },
       "probe": {
         "file": "iPhoneOS26.5.sdk/SDKSettings.json"
@@ -58,12 +65,19 @@
     "corecompiler": {
       "label": "Swift 编译器",
       "kind": "archive",
-      "size": "~186MB",
+      "size": "~68MB",
       "required": false,
-      "description": "CoreCompiler.framework（源码→.o）",
+      "description": "CoreCompiler（源码→.o）。注意：Swift 前端只支持设备端编译，iSH 内不能直接跑",
       "install": {
         "type": "archive",
-        "url": "CoreCompiler.framework.zst"
+        "urls": [
+          "https://github.com/DooRoo666/NanoCode/releases/download/runtime-deps/CoreCompiler.zip",
+          "https://ghproxy.net/https://github.com/DooRoo666/NanoCode/releases/download/runtime-deps/CoreCompiler.zip"
+        ],
+        "archive": "zip",
+        "skip_prefixes": [
+          "__MACOSX/"
+        ]
       },
       "probe": {
         "file": "CoreCompiler.framework/CoreCompiler"
@@ -74,7 +88,7 @@
       "kind": "archive",
       "size": "~142MB",
       "required": false,
-      "description": "stdlib 模块与 resource-dir",
+      "description": "stdlib 模块与 resource-dir（Swift 源码用 import Foundation 时必需）",
       "install": {
         "type": "archive",
         "url": "Shared-swift.zst"
