@@ -32,72 +32,69 @@ SSE = "Agent/Chat/AIChatViewModel+SSEStream.swift"
 def patch_schema(root):
     f = f"{root}/{DEF}"
     old = "        if includeMemoryTools {"
-    new = '''        // nanoMuse-toolreg: 宿主层执行能力。这两个工具此前只被定义、从未注册，
+    new_code = '''        // nanoMuse-toolreg: 宿主层执行能力。这两个工具此前只被定义、从未注册，
         // 模型完全看不到它们。host_exec 走 posix_spawn + 随包 nsh，
         // codex_exec 走随包 codex-sign，都是无 fork 实现，iOS 沙盒下可用。
         if includeHostTools {
             tools.append(
                 AgentToolDefinition(
                     name: NanoMuseHostShellTool.toolName,
-                    description: "在 iOS 宿主进程外执行 shell 命令（nsh，无 iSH）。"
-                        + "可用随包 helper：bash.real/ls/cat/grep/sed/xxd/tar 等。"
-                        + "支持管道、重定向、&&、||、$VAR、$()、通配符、cd。"
-                        + "不支持子 shell ( ) 和后台 & 。"
-                        + "需要真正的 Linux 环境（apk/git/python）时改用 shell_execute。",
+                    description: "在 iOS 宿主进程执行 shell 命令（nsh，无 fork，不依赖 iSH）。可用随包 helper：bash.real/ls/cat/grep/sed/xxd/tar 等。支持管道、重定向、&&、||、$VAR、$()、通配符、cd。不支持子 shell ( ) 与后台 & 。需要真正的 Linux 环境（apk/git/python）时改用 shell_execute。",
                     parameters: [
-                        AgentToolParam(name: "command", type: .string,
-                            description: "要执行的命令，例如 `ls -l /private/var/mobile/Documents`"),
-                        AgentToolParam(name: "timeout", type: .number,
-                            description: "超时秒数，默认 60"),
-                    ]
+                        "tool_title": AgentToolParam(type: .string, description: "工具调用摘要，5-10词，给用户看，用用户的语言"),
+                        "command": AgentToolParam(type: .string, description: "要执行的命令，例如 ls -l /private/var/mobile/Documents"),
+                        "timeout": AgentToolParam(type: .integer, description: "超时秒数，默认 60"),
+                    ],
+                    required: ["tool_title", "command"],
+                    propertyOrdering: ["tool_title", "command", "timeout"]
                 )
             )
             tools.append(
                 AgentToolDefinition(
                     name: NanoMuseCodexTool.toolName,
-                    description: "调用随包 Codex 编码代理，在指定工作区里读写文件、执行命令并返回结果。",
+                    description: "调用随包 Codex 编码代理，在指定工作区里读写文件、执行命令并返回结果。适合多步编码任务。",
                     parameters: [
-                        AgentToolParam(name: "prompt", type: .string,
-                            description: "交给 Codex 的任务，尽量具体"),
-                        AgentToolParam(name: "workspace", type: .string,
-                            description: "允许操作的工作目录绝对路径"),
-                        AgentToolParam(name: "timeout", type: .number,
-                            description: "超时秒数，默认 900"),
-                    ]
+                        "tool_title": AgentToolParam(type: .string, description: "工具调用摘要，5-10词，给用户看，用用户的语言"),
+                        "prompt": AgentToolParam(type: .string, description: "交给 Codex 的任务，尽量具体"),
+                        "workspace": AgentToolParam(type: .string, description: "允许操作的工作目录绝对路径，默认 /root/work"),
+                        "timeout": AgentToolParam(type: .integer, description: "超时秒数，默认 900"),
+                    ],
+                    required: ["tool_title", "prompt"],
+                    propertyOrdering: ["tool_title", "prompt", "workspace", "timeout"]
                 )
             )
         }
         if includeMemoryTools {'''
-    return patch(f, old, new, "schema 注册")
+    return patch(f, old, new_code, "schema 注册")
 
 def patch_switch(root):
     f = f"{root}/{CONC}"
     old = '        case "file_read":'
-    new = '''        // nanoMuse-toolreg: 宿主工具执行分支。没有这段，host_exec/codex_exec
+    new_code = '''        // nanoMuse-toolreg: 宿主工具执行分支。没有这段，host_exec/codex_exec
         // 会被 SSE 的 default 兜底当成普通 shell 工具，永远走不到真实实现。
         case NanoMuseHostShellTool.toolName:
-            let cmd = tu.input["command"] as? String ?? ""
-            let t = (tu.input["timeout"] as? Double) ?? 60
-            let out = await NanoMuseHostShellTool.execute(command: cmd, timeout: t)
-            toolOutput = out.text
-            toolSuccess = out.exitCode == 0
+            let hostArgs = (try? JSONSerialization.jsonObject(with: Data(argsJson.utf8))) as? [String: Any] ?? [:]
+            let hostCmd = hostArgs["command"] as? String ?? ""
+            let hostTimeout = (hostArgs["timeout"] as? NSNumber)?.doubleValue ?? 60
+            let hostOut = await NanoMuseHostShellTool.execute(command: hostCmd, timeout: hostTimeout)
             if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
-                messages[msgIdx].blocks[blockIdx].content = out.text
+                messages[msgIdx].blocks[blockIdx].content = hostOut.text
             }
+            toolOutput = hostOut.text
+            toolSuccess = hostOut.exitCode == 0
         case NanoMuseCodexTool.toolName:
-            let prompt = tu.input["prompt"] as? String ?? ""
-            let ws = tu.input["workspace"] as? String ?? "/root/work"
-            let t = (tu.input["timeout"] as? Double) ?? 900
-            let out = await NanoMuseCodexTool.execute(
-                prompt: prompt, workspace: ws, timeout: t
-            )
-            toolOutput = out.text
-            toolSuccess = out.exitCode == 0
+            let codexArgs = (try? JSONSerialization.jsonObject(with: Data(argsJson.utf8))) as? [String: Any] ?? [:]
+            let codexPrompt = codexArgs["prompt"] as? String ?? ""
+            let codexWs = codexArgs["workspace"] as? String ?? "/root/work"
+            let codexTimeout = (codexArgs["timeout"] as? NSNumber)?.doubleValue ?? 900
+            let codexOut = await NanoMuseCodexTool.execute(prompt: codexPrompt, workspace: codexWs, timeout: codexTimeout)
             if msgIdx < messages.count, blockIdx < messages[msgIdx].blocks.count {
-                messages[msgIdx].blocks[blockIdx].content = out.text
+                messages[msgIdx].blocks[blockIdx].content = codexOut.text
             }
+            toolOutput = codexOut.text
+            toolSuccess = codexOut.exitCode == 0
         case "file_read":'''
-    return patch(f, old, new, "并发执行分支")
+    return patch(f, old, new_code, "并发执行分支")
 
 def patch_sse(root):
     f = f"{root}/{SSE}"
