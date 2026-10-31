@@ -1,156 +1,66 @@
-# host_exec / codex_exec 回显与写法实录（iOS 真机实测）
+# 宿主侧执行工具选型与铁律（实测）
 
-> 在 Minis.app 的 nsh（forkless, posix_spawn）与 bash.real 委托机制下逐条实测所得。
-> 目的：避免"明明命令对却回显错乱 / 丢输出 / 假失败"，一次写对。
+> 版本：Codex 0.162.1 / provider=nanomuse / model=deepseek-v4.1-flash
+> 环境：iOS 真机宿主，nsh（forkless，Minis.app/Helpers/nsh）
 
----
+## 一、结论（一句话）
 
-## 一、结论速查
+**真实执行 → 用 `host_exec`，命令强制 `;` 单行化；
+需要推理/改文件 → 才用 `codex_exec`，且不依赖它的命令间状态。**
 
-| 写法 | 是否可靠 | 说明 |
-|------|----------|------|
-| 单行命令 | ✅ | 一切正常 |
-| 多行用真实换行 `\n` 分隔 | ❌ **不可靠** | 换行被吞、行粘连、丢行、`$?` 读错 |
-| 多行用 `;` 分隔（单行化） | ✅ | **推荐**，`$?` 完全正确 |
-| `echo "rc=$?"`（行尾 $?） | ⚠️ | 后接换行时会粘连，改用 printf + 变量中转 |
-| `rc=$?; printf 'rc=%s\n' "$rc"` | ✅ | **推荐**取值方式 |
-| `printf '...\n'` | ✅ | 比 `echo` 稳，跨实现一致 |
-| `1>&2` | ✅ | 可用（此前误判为不支持） |
-| `sleep` | ❌ | 宿主无此二进制，nsh 内建也没有 → 127 或 Bus error |
-| `delay` 参数 | ✅ | 需要等待时用 host_exec 的 delay，而不是 sleep |
-| shell 函数 `f(){...}` | ❌ | nsh 报 `No such file or directory`，别用函数封装 |
-| `for/while/if/case` | ✅ | 会委托 bash.real，可用（但别和真实换行混用） |
+## 二、为什么不是 codex_exec（关键实证）
 
----
+`codex-home/bin/sh` 与 `bin/bash` 都是符号链接 → `Minis.app/Helpers/nsh`。
+**codex_exec 底层 shell 与 host_exec 是同一个 nsh**，多行"看起来正常"
+只是因为 codex 把每条命令**拆成独立进程**执行。后果：
 
-## 二、三个真实故障（附复现）
+同一脚本 `x=5; echo "val=$x"; false; echo "rc=$?"`
 
-### 故障 1：多行命令换行被吞，三条粘成一行
+| 工具 | val | rc | 说明 |
+|------|-----|-----|------|
+| host_exec（分号） | **5** ✓ | **1** ✓ | 状态延续、真实退出码 |
+| codex_exec | 空 ✗ | 0 ✗ | 每命令独立 shell，状态不保留 |
 
-```sh
-# 输入（真实换行分隔）
-true; echo "r1=$?"
-echo "line2"
-ls /nope 2>/dev/null; echo "r2=$?"
+→ codex_exec **无法**做 变量→判断→退出码 的真实脚本逻辑。
 
-# 实测输出（错误！）
-r1=0 echo line2 ls /nope
-r2=0
-```
+## 三、host_exec 实测能力边界
 
-**症状**：`r1=0` 后面直接接到 `echo line2 ls /nope`；`ls /nope` 的 `r2` 应为非 0，却显示 `0`。
-**根因**：nsh 在**多行**输入时把后一行的换行当参数拼接，实为委托 bash.real 时的分行缺陷。
+| 场景 | 结果 |
+|------|------|
+| 真换行多行 | ❌ 换行被吞（`echo one\necho two` → `one echo two`） |
+| `;` 单行串联 | ✅ 正常 |
+| `for f in a b c; do ...; done` 单行 | ✅ 正常 |
+| 跨行 `for/do/done` | ❌ 崩（`nsh: do/done: No such file`） |
+| `rc=$?` 紧跟目标命令 | ✅ 正确 |
+| `printf` + 显式 `\n` | ✅（但见下注） |
+| `echo '...' >> file` 追加多行 | ⚠️ 换行丢失，写进同一行 |
+| 函数定义 | ⚠️ 不保证，避免 |
+| `sleep` | ⚠️ 卡工具调用；用 `delay` 参数替代 |
 
-### 故障 2：`$?` 捕获错误 + 尾行丢失
+注：`printf 'a\nb\n' > f` 与 `echo >> f` 在 nsh 下换行会被丢，
+**要写多行文件，用本仓库 `script/nsh_run.sh` 或走 iSH(`shell_execute`)**。
 
-```sh
-# 输入
-false
-rc=$?
-printf 'captured=%s\n' "$rc"
-echo "direct=$?"
-
-# 实测：完全无输出
-```
-
-**症状**：多行 + `$?` 组合直接整段失败，或 `false; rc=$?` 读到 `0`（应为 `1`）。
-**根因**：同上，换行分隔失效导致 `$?` 读到错误的行上下文。
-
-### 故障 3：`sleep` 直接崩
-
-```sh
-sleep 1
-# nsh: sleep: No such file or directory   (rc=127)
-
-# 若经 bash.real：
-# bash.real: line 1: 1177 Bus error: 10
-```
-
-**根因**：宿主根文件系统无 `sleep` 二进制；nsh 内建也没有。
-**替代**：需要等待时用 `host_exec` 的 `delay` 参数（工具级等待，不占用 shell）。
-
----
-
-## 三、正确写法模板
-
-> **总原则：能单行就单行；多步一律 `;` 分隔；取值用 `rc=$?` 中转；输出用 `printf`。**
-
-### ✅ 多步 + 取退出码（单行化 + printf + 变量中转）
-
-```sh
-false; rc=$?; printf 'step1_rc=%s\n' "$rc"; true; rc=$?; printf 'step2_rc=%s\n' "$rc"; printf 'end\n'
-```
-
-输出：
+## 四、铁律（照抄即可）
 
 ```
-step1_rc=1
-step2_rc=0
-end
+# 1. 永远分号单行，不写真换行
+cmd1; rc=$?; printf 'rc=%s\n' "$rc"
+
+# 2. 退出码紧跟目标命令
+false; rc=$?; printf 'rc=%s\n' "$rc"     # rc=1 ✓
+
+# 3. 循环必须单行
+for f in a b c; do printf 'item=%s\n' "$f"; done
+
+# 4. 用 printf 代替 echo（转义更可控）
+
+# 5. 不跨行 for/do/done、不定义函数、不用 sleep（用 delay）
 ```
 
-### 📋 直接抄：通用脚本骨架（无函数，实测可用）
+## 五、codex_exec 使用注意（实测）
 
-> ⚠️ **nsh 不支持 shell 函数**（`step(){...}` 会报 `No such file or directory`）。
-> 直接用 `printf` 做分隔，别包函数。
-
-```sh
-printf '\n== 检查环境 ==\n'; ls /path 2>&1 | head -5; rc=$?; printf 'rc=%s\n' "$rc"; printf '\n== 执行构建 ==\n'; make 2>&1; rc=$?; printf 'rc=%s\n' "$rc"; printf '\n== 完成 ==\n'
-```
-
-输出实测：
-
-```
-== 检查环境 ==
-...
-rc=0
-
-== 执行构建 ==
-...
-rc=0
-
-== 完成 ==
-```
-
-要点：全部一条物理行；每步 `printf` 分隔 + `rc=$?` **紧跟其后**（中间不能隔东西）；`$?` 只在紧邻时才可靠。
-
-### ✅ 需要等待
-
-```sh
-# 不要 sleep；在工具调用参数里设 delay
-```
-
-### ✅ 检查文件是否存在（避免 grep 空结果误导）
-
-```sh
-if [ -e /path/x ]; then printf 'YES\n'; else printf 'NO\n'; fi
-```
-
-### ✅ stderr 合并
-
-```sh
-some_cmd 2>&1; printf 'rc=%s\n' "$?"
-```
-
----
-
-## 四、codex_exec 回显
-
-`codex_exec` 回显是**完整**的：命令 → exec 段 → succeeded 段 → 模型最终回复，逐段可读，无需额外处理。
-长任务直接用它，不必担心丢信息。
-
----
-
-## 五、排查清单
-
-遇到"命令明明对但结果怪"时，依次检查：
-
-1. 是否用了**真实换行**分隔多条命令？→ 改 `;` 单行化
-2. 是否行尾直接 `$?`？→ 改 `rc=$?; printf`
-3. 是否用了 `sleep`？→ 换 `delay` 参数
-4. `$?` 是否为 0 但预期非 0？→ 多半是换行粘连读错行
-5. 输出为空？→ 多行 + `$?`，改为分号单行
-
----
-
-*实测环境：Minis.app / iOS，nsh (posix_spawn) + bash.real 委托。*
+- 偶发 `wire_api = "chat" is no longer supported` 报错 → **重试即好**，非配置损坏
+- 每次夹带大量日志/思考过程，输出需自行提取
+- 有 `deprecated: experimental_use_unified_exec_tool` 警告 → codex 内置默认，
+  codex-home/config.toml 无 `[features]` 段，**不影响运行，忽略**
+- 只读验证类任务可放心；依赖状态的命令一律回 host_exec 跑
