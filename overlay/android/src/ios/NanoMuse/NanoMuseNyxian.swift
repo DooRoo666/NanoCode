@@ -681,6 +681,98 @@ enum NanoMuseNyxian {
         return out.joined(separator: "\n")
     }
 
+    /// 把多个目标文件链接成 GUI app 可执行文件（C / ObjC / ObjC++ / Swift 混合工程）。
+    ///
+    /// 独立于 `swiftLink`：`swiftLink`（含自检的 legacy 三组参数）保持逐字不变，
+    /// 这里只服务 `swift_tipa` 的多 `.o` 场景。
+    ///
+    /// - Parameters:
+    ///   - objs: 全部 `.o`（每个源文件一个，主入口所在文件也在其中）。
+    ///   - swift: 工程含 Swift 目标文件时为 true：走 Swift driver，并显式带
+    ///     `-lswiftCore -lswiftFoundation`；否则走 clang driver（用 `-isysroot`）。
+    ///   - objc: 含 `.m` / `.mm` 时加 `-lobjc`。
+    ///   - cxx: 含 `.mm` 时加 `-lc++`。
+    static func linkAppObjects(loaded: Loaded,
+                               objs: [URL],
+                               bin: URL,
+                               sdk: String,
+                               res: String,
+                               work: URL,
+                               target: String,
+                               frameworks: [String] = [],
+                               objc: Bool = false,
+                               cxx: Bool = false,
+                               swift: Bool = true,
+                               progress: ((String) -> Void)? = nil) -> String {
+        let fm = FileManager.default
+        let lib = sdk + "/usr/lib/swift"
+        let sysLib = sdk + "/usr/lib"
+        let fw = sdk + "/System/Library/Frameworks"
+        let resLib = res.isEmpty ? "" : res + "/swift/iphoneos"
+        let frameworkArgs = frameworks.flatMap { ["-framework", $0] }
+        let objectArgs = objs.map(\.path)
+
+        // Swift driver 认 `-sdk`；clang driver 认 `-isysroot`。
+        var search = swift
+            ? ["-sdk", sdk, "-target", target, "-L", lib, "-L", sysLib, "-F", fw]
+            : ["clang", "-target", target, "-isysroot", sdk, "-L", sysLib, "-F", fw]
+        if !resLib.isEmpty { search += ["-L", resLib] }
+
+        var runtime: [String] = []
+        if objc { runtime.append("-lobjc") }
+        if cxx { runtime.append("-lc++") }
+        if swift { runtime += ["-lswiftCore", "-lswiftFoundation"] }
+
+        // 第一组带全部运行时；兜底组去掉 Swift 运行时（Swift driver 通常会自动带），
+        // 最后一组只留框架，尽量让缺库时也能看到真正的 undefined symbol。
+        var sets: [[String]] = [search + frameworkArgs + runtime + ["-o", bin.path] + objectArgs]
+        if swift {
+            var noSwiftRuntime: [String] = []
+            if objc { noSwiftRuntime.append("-lobjc") }
+            if cxx { noSwiftRuntime.append("-lc++") }
+            sets.append(search + frameworkArgs + noSwiftRuntime + ["-o", bin.path] + objectArgs)
+        }
+        sets.append(search + frameworkArgs + ["-o", bin.path] + objectArgs)
+
+        var out: [String] = []
+        for (i, args) in sets.enumerated() {
+            try? fm.removeItem(at: bin)
+            progress?("[链接尝试 \(i + 1)/\(sets.count)] " + args.joined(separator: " "))
+            let r = loaded.run(args, swift: swift)
+            let size = ((try? fm.attributesOfItem(atPath: bin.path))?[.size] as? NSNumber)?.intValue ?? 0
+            out.append("[(\(i + 1))] ok=\(r.ok) bin=\(size)B")
+            if size > 0 {
+                out.append("链接成功参数: " + args.joined(separator: " "))
+                return out.joined(separator: "\n")
+            }
+            let errors = r.log.split(separator: "\n").filter {
+                $0.lowercased().contains("error") || $0.lowercased().contains("undefined")
+            }
+            for line in errors.prefix(5) { out.append("    " + String(line)) }
+            for line in undefinedSymbols(in: r.log) { out.append("    缺符号: " + line) }
+        }
+        return out.joined(separator: "\n")
+    }
+
+    /// 从链接器日志里挑出 undefined / 缺符号相关的行，便于直接看出缺哪个符号。
+    private static func undefinedSymbols(in log: String) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in log.split(separator: "\n") {
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            let lower = line.lowercased()
+            let interesting = lower.contains("undefined")
+                || lower.contains("symbol(s) not found")
+                || lower.contains("referenced from")
+                || line.hasPrefix("\"_")
+                || line.hasPrefix("_OBJC_")
+            guard interesting, seen.insert(line).inserted else { continue }
+            out.append(line)
+            if out.count >= 12 { break }
+        }
+        return out
+    }
+
     // MARK: - 小工具
 
     static func cfArray(_ strings: [String]) -> UnsafeMutableRawPointer {

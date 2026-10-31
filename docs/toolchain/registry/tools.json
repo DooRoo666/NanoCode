@@ -98,10 +98,10 @@
       }
     },
     "swift_tipa": {
-      "label": "Swift 源码 → TIPA",
+      "label": "C/ObjC/ObjC++/Swift 源码 → TIPA",
       "kind": "builtin",
       "required": false,
-      "description": "宿主进程内把 Swift 源码编译、链接、签名并打包成 .tipa（arm64e，不 fork、不走 iSH）",
+      "description": "宿主进程内把 C / Objective-C / Objective-C++ / Swift 源码（可混合工程）逐个编译为 .o、链接、签名并打包成 .tipa（arm64e，不 fork、不走 iSH）",
       "implementation": {
         "swift": "overlay/android/src/ios/NanoMuse/NanoMuseSwiftTipaTool.swift",
         "tool_name": "swift_tipa",
@@ -113,8 +113,8 @@
         "swiftrt"
       ],
       "source": {
-        "compiler": "NanoMuseNyxian.load() / Loaded.run(args, swift: true)",
-        "linker": "NanoMuseNyxian.swiftLink(...)",
+        "compiler": "NanoMuseNyxian.load() / Loaded.run(args, swift: true) for .swift, swift: false (clang) for .c/.m/.mm",
+        "linker": "NanoMuseNyxian.linkAppObjects(...)（多 .o + -lobjc / -lc++ / Swift 运行时）",
         "signer": "NanoMuseMachSigner.sign(path:entitlements:identifier:), fallback codex-sign",
         "packager": "NanoMuseTipaBuilder.build(appPath:entitlements:outputName:)"
       }

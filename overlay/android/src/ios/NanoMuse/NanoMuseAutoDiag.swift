@@ -21,6 +21,16 @@ enum NanoMuseAutoDiag {
             NanoMusePersona.probeAndWrite()
             // Nyxian 工具链自检：dlopen CoreCompiler + 编译/链接一个 hello，结果写 nyxian-diag.txt
             _ = NanoMuseNyxian.writeDiagnostics()
+
+            // ★ 2026-10-30 新增：SDK 自动下载
+            // 当前策略 = 「开箱即用」：启动时若 Runtimes/sdks/ 里没有可用 SDK，
+            // 自动从官方地址拉一份，用户不用管。
+            // ⏳ 后期计划 = 「用户自选下载」：改由 NanoMuseRuntimeManifest 里的清单
+            //    条目驱动，用户在设置里自己选下哪一份（含版本号、体积、来源）。
+            //    届时把下面这行的 `NanoMuseSDKDownloader.ensureInstalled()` 换成
+            //    「检查清单 + 提示用户去设置页下载」，NanoMuseSDKDownloader 本身可原样保留。
+            NanoMuseSDKDownloader.ensureInstalled { _ in }
+
             NanoMuseNyxian.startSwiftWatch()
         }
     }

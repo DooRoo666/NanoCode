@@ -1,6 +1,7 @@
 import Foundation
 
-/// `swift_tipa`：Swift 源码 → 编译 → 链接 → .app → 签名 → .tipa。
+/// `swift_tipa`：C / Objective-C / Objective-C++ / Swift 源码 → 编译 → 链接
+/// → .app → 签名 → .tipa。
 ///
 /// 全程在宿主 App 进程内完成，不 fork、不经过 iSH：
 ///   · 编译 / 链接：`NanoMuseNyxian`（CoreCompiler.framework 的 C API）
@@ -15,20 +16,35 @@ enum NanoMuseSwiftTipaTool {
     static let target = "arm64e-apple-ios26.5"
     static let minimumOS = "26.0"
 
+    /// 可以编译的源码扩展名（小写，不带点）。
+    static let supportedExtensions: Set<String> = ["swift", "c", "m", "mm"]
+
+    /// 看起来是源码、但本工具不支持的扩展名；目录里出现时直接报错，避免静默漏编。
+    private static let unsupportedSourceExtensions: Set<String> = [
+        "cc", "cpp", "cxx", "c++",
+        "s", "asm", "cs", "java", "kt", "kts", "rs", "go",
+        "js", "jsx", "ts", "tsx", "py", "rb", "php", "lua", "dart",
+    ]
+
     static var definition: AgentToolDefinition {
         AgentToolDefinition(
             name: toolName,
             description: """
-            Compile Swift source directly into an installable .tipa on the iPhone, in-process \
-            (no fork, no iSH). Pass one .swift file or a directory of .swift files; it compiles \
-            with CoreCompiler for arm64e, links against the installed iPhoneOS SDK, assembles a \
-            minimal .app bundle, signs it with TrollStore entitlements and packages Payload/ into \
-            a .tipa. Use this after writing an iOS GUI app (it must call UIApplicationMain). \
-            The absolute .tipa path is returned and can be opened with TrollStore.
+            Compile an iOS GUI app written in C, Objective-C, Objective-C++ or Swift directly \
+            into an installable .tipa on the iPhone, in-process (no fork, no iSH). Pass one source \
+            file (.swift/.c/.m/.mm) or a directory containing them; every source file is compiled \
+            to its own .o for arm64e with CoreCompiler, then linked against the installed iPhoneOS \
+            SDK, assembled into a minimal .app bundle, signed with TrollStore entitlements and \
+            packaged as Payload/ inside a .tipa. Mixed-language projects are supported \
+            (e.g. main.swift + helper.c). Swift sources must call UIApplicationMain themselves \
+            (otherwise the app shows a black screen or crashes on launch). For Swift calling into \
+            Objective-C, a Bridging-Header.h (or <Name>-Bridging-Header.h) next to the sources is \
+            picked up automatically as -import-objc-header; without one, Swift only sees Swift \
+            modules. The absolute .tipa path is returned and can be opened with TrollStore.
             """,
             parameters: [
                 "tool_title": AgentToolParam(type: .string, description: "A concise 5-10 word summary shown to the user. Use the user's language."),
-                "source": AgentToolParam(type: .string, description: "Absolute path to a .swift file, or a directory whose .swift files are all compiled together."),
+                "source": AgentToolParam(type: .string, description: "Absolute path to a .swift/.c/.m/.mm file, or a directory searched recursively for those four extensions (mixed-language projects allowed)."),
                 "name": AgentToolParam(type: .string, description: "App name, also used as the executable name. Defaults to the source file/directory name."),
                 "bundle_id": AgentToolParam(type: .string, description: "CFBundleIdentifier. Defaults to com.nanocode.<name>, lowercased."),
                 "output": AgentToolParam(type: .string, description: "Optional output file name, e.g. MyApp.tipa. Defaults to <name>.tipa."),
@@ -63,7 +79,7 @@ enum NanoMuseSwiftTipaTool {
         // ---- 1. 源文件 -----------------------------------------------------
         let input = expand(source)
         guard !input.isEmpty else {
-            log.append("ERR 缺少 source：请传 .swift 文件或目录的绝对路径")
+            log.append("ERR 缺少 source：请传 .swift / .c / .m / .mm 文件或目录的绝对路径")
             return finish("", code: 1)
         }
         guard input.hasPrefix("/") else {
@@ -78,35 +94,55 @@ enum NanoMuseSwiftTipaTool {
 
         let sources: [URL]
         if isDir.boolValue {
-            sources = swiftFiles(in: URL(fileURLWithPath: input, isDirectory: true))
+            let directory = URL(fileURLWithPath: input, isDirectory: true)
+            sources = sourceFiles(in: directory)
             log.append("源目录：\(input)")
-            log.append("发现 \(sources.count) 个 .swift：")
+            log.append("发现 \(sources.count) 个源文件：")
             for file in sources { log.append("  · \(file.path)") }
             guard !sources.isEmpty else {
-                log.append("ERR 目录下没有 .swift 文件")
+                log.append("ERR 目录下没有 .swift / .c / .m / .mm 源文件")
+                return finish("", code: 1)
+            }
+            let unsupported = unsupportedSources(in: directory)
+            guard unsupported.isEmpty else {
+                log.append("ERR 目录里有不支持的源码扩展名：")
+                for file in unsupported { log.append("  · \(file.path)") }
+                log.append("    仅支持 .swift / .c / .m / .mm；请移除或改写这些文件后重试。")
                 return finish("", code: 1)
             }
         } else {
-            guard input.lowercased().hasSuffix(".swift") else {
-                log.append("ERR 不是 .swift 文件：\(input)")
+            let ext = URL(fileURLWithPath: input).pathExtension.lowercased()
+            guard supportedExtensions.contains(ext) else {
+                log.append("ERR 不支持的源码扩展名「.\(ext)」：\(input)")
+                log.append("    仅支持 .swift / .c / .m / .mm。")
                 return finish("", code: 1)
             }
             sources = [URL(fileURLWithPath: input)]
             log.append("源文件：\(input)")
         }
 
+        let swiftSources = sources.filter { $0.pathExtension.lowercased() == "swift" }
+        let objcSources = sources.filter {
+            let ext = $0.pathExtension.lowercased()
+            return ext == "m" || ext == "mm"
+        }
+        let cxxSources = sources.filter { $0.pathExtension.lowercased() == "mm" }
+        let clangSources = sources.filter { $0.pathExtension.lowercased() != "swift" }
+        log.append("语言构成：Swift \(swiftSources.count) · C \(clangSources.count - objcSources.count) · ObjC \(objcSources.count - cxxSources.count) · ObjC++ \(cxxSources.count)")
+
         let appName = sanitizedName(name, fallback: defaultName(for: URL(fileURLWithPath: input)))
         let bundle = normalizedBundleID(bundleID, appName: appName)
         log.append("App：\(appName)")
         log.append("Bundle ID：\(bundle)")
 
-        // 只受理主入口在源码里出现的情况：Swift 顶层代码若没有 UIApplicationMain，
+        // 只受理主入口在源码里出现的情况：GUI app 若没有 UIApplicationMain，
         // 装上去必然闪退/黑屏。这里不修改源码，只给出明确可操作的错误。
         let combined = sources.compactMap { try? String(contentsOf: $0, encoding: .utf8) }
             .joined(separator: "\n")
         guard combined.contains("UIApplicationMain") else {
             log.append("ERR 源码缺少 UIApplicationMain —— 编出来是终端程序，安装后会闪退/黑屏。")
-            log.append("    请以 UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self)) 结尾。")
+            log.append("    Swift 请以 UIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, NSStringFromClass(AppDelegate.self)) 结尾。")
+            log.append("    C / ObjC / ObjC++ 请在 main() 里调用 UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]))。")
             return finish("", code: 1)
         }
 
@@ -175,7 +211,7 @@ enum NanoMuseSwiftTipaTool {
         }
 
         // ---- 3. 编译 -------------------------------------------------------
-        log.append("[2/6] 编译 Swift（swiftc via CoreCompiler）…")
+        log.append("[2/6] 编译源码（CoreCompiler：swiftc / clang）…")
         let loaded: NanoMuseNyxian.Loaded
         switch NanoMuseNyxian.load() {
         case .success(let value):
@@ -187,53 +223,57 @@ enum NanoMuseSwiftTipaTool {
             return finish("", code: 1)
         }
 
-        // 目录内的全部 .swift 作为同一个模块一次编译；-emit-object 产出单个 .o，
-        // 避免多文件各自编译时的模块边界与同名文件覆盖问题。
-        let object = objectsDir.appendingPathComponent("main.o")
-        try? fm.removeItem(at: object)
-        var compileArgs = ["-target", target,
-                           "-sdk", sdk.path,
-                           "-isysroot", sdk.path,
-                           "-F", sdk.path + "/System/Library/Frameworks",
-                           "-I", sdk.path + "/usr/lib/swift",
-                           "-L", sdk.path + "/usr/lib/swift",
-                           "-module-cache-path", moduleCache.path]
-        if !res.isEmpty { compileArgs += ["-resource-dir", res] }
-        compileArgs += ["-module-name", "main"]
-        compileArgs += ["-emit-object", "-o", object.path]
-        compileArgs += sources.map(\.path)
-        log.append("      " + sources.map(\.lastPathComponent).joined(separator: ", "))
-        let startedCompile = Date()
-        let compile = loaded.run(compileArgs, swift: true)
-        log.append("      ok=\(compile.ok) · \(String(format: "%.1fs", Date().timeIntervalSince(startedCompile)))")
-        log.append(indent(compile.log))
-        let produced = ((try? fm.attributesOfItem(atPath: object.path))?[.size] as? NSNumber)?.intValue ?? 0
-        guard compile.ok, fm.fileExists(atPath: object.path), produced > 0 else {
-            log.append("ERR 编译失败：\(sources.map(\.path).joined(separator: ", "))")
-            log.append("    常见原因：缺少 Swift 资源目录、SDK 不匹配、源码语法错误。")
+        let moduleName = moduleIdentifier(appName)
+        let includeDirs = headerSearchPaths(sources: sources, root: isDir.boolValue ? input : nil)
+        let bridging = bridgingHeader(sources: sources,
+                                      directory: isDir.boolValue ? input : nil,
+                                      module: moduleName)
+        if let bridging { log.append("Bridging header：\(bridging.path)") }
+        log.append("Swift module：\(moduleName)")
+        log.append("头文件搜索：\(includeDirs.isEmpty ? "（无）" : includeDirs.joined(separator: ", "))")
+
+        let compiled = compileAll(loaded: loaded,
+                                  swiftSources: swiftSources,
+                                  clangSources: clangSources,
+                                  objectsDir: objectsDir,
+                                  sdk: sdk.path,
+                                  res: res,
+                                  moduleCache: moduleCache,
+                                  moduleName: moduleName,
+                                  includeDirs: includeDirs,
+                                  bridgingHeader: bridging)
+        log.append(contentsOf: compiled.lines)
+        guard compiled.ok, !compiled.objects.isEmpty else {
+            log.append("ERR 编译失败，未产出完整的目标文件集合。")
             return finish("", code: 1)
         }
-        log.append("      目标文件：\(object.path)（\(produced) B）")
+        log.append("      目标文件 \(compiled.objects.count) 个：")
+        for object in compiled.objects {
+            let size = ((try? fm.attributesOfItem(atPath: object.path))?[.size] as? NSNumber)?.intValue ?? 0
+            log.append("        · \(object.lastPathComponent)（\(size) B）")
+        }
 
         // ---- 4. 链接 -------------------------------------------------------
-        log.append("[3/6] 链接 executable（swiftLink）…")
+        log.append("[3/6] 链接 executable（多目标文件）…")
         try? fm.removeItem(at: binary)
-        let linkLog = NanoMuseNyxian.swiftLink(loaded: loaded,
-                                               obj: object,
-                                               bin: binary,
-                                               sdk: sdk.path,
-                                               res: res,
-                                               work: work,
-                                               target: target,
-                                               isolated: false,
-                                               frameworks: ["UIKit", "Foundation"],
-                                               progress: { log.append(indent($0)) })
+        let linkLog = NanoMuseNyxian.linkAppObjects(loaded: loaded,
+                                                    objs: compiled.objects,
+                                                    bin: binary,
+                                                    sdk: sdk.path,
+                                                    res: res,
+                                                    work: work,
+                                                    target: target,
+                                                    frameworks: ["UIKit", "Foundation"],
+                                                    objc: !objcSources.isEmpty,
+                                                    cxx: !cxxSources.isEmpty,
+                                                    swift: !swiftSources.isEmpty,
+                                                    progress: { log.append(indent($0)) })
         log.append(indent(linkLog))
         let linkedSize = ((try? fm.attributesOfItem(atPath: binary.path))?[.size] as? NSNumber)?.intValue ?? 0
         let linked = linkedSize > 0
         guard linked, fm.fileExists(atPath: binary.path) else {
             log.append("ERR 链接失败：未产出可执行文件")
-            log.append("    检查 SDK 的 usr/lib/swift 与 System/Library/Frameworks 是否完整。")
+            log.append("    上面「缺符号」行即链接器报告的未解析符号；也可检查 SDK 的 usr/lib/swift、usr/lib/libobjc.tbd、usr/lib/libc++.tbd 是否完整。")
             return finish("", code: 1)
         }
         let binarySize = linkedSize
@@ -314,7 +354,7 @@ enum NanoMuseSwiftTipaTool {
         let tipaURL = URL(fileURLWithPath: tipa)
         let tipaSize = ((try? fm.attributesOfItem(atPath: tipaURL.path))?[.size] as? NSNumber)?.intValue ?? 0
         log.append("")
-        log.append("编译：成功（\(sources.count) 个源文件 → 1 个 .o）")
+        log.append("编译：成功（\(sources.count) 个源文件 → \(compiled.objects.count) 个 .o）")
         log.append("链接：成功（\(binarySize) B，arm64e）")
         log.append("Bundle（临时）：\(app.path)")
         log.append("    打包完成后临时目录会删除；可安装产物在下方 TIPA 路径。")
@@ -333,7 +373,8 @@ enum NanoMuseSwiftTipaTool {
         return (trimmed as NSString).expandingTildeInPath
     }
 
-    private static func swiftFiles(in directory: URL) -> [URL] {
+    /// 目录递归收集 `.swift` / `.c` / `.m` / `.mm`，按路径排序。
+    private static func sourceFiles(in directory: URL) -> [URL] {
         let keys: [URLResourceKey] = [.isRegularFileKey, .isDirectoryKey]
         guard let walker = FileManager.default.enumerator(at: directory,
                                                          includingPropertiesForKeys: keys,
@@ -342,10 +383,217 @@ enum NanoMuseSwiftTipaTool {
         var files: [URL] = []
         for case let file as URL in walker {
             let values = try? file.resourceValues(forKeys: Set(keys))
-            guard values?.isRegularFile == true, file.pathExtension.lowercased() == "swift" else { continue }
+            guard values?.isRegularFile == true,
+                  supportedExtensions.contains(file.pathExtension.lowercased()) else { continue }
             files.append(file)
         }
         return files.sorted { $0.path < $1.path }
+    }
+
+    /// 目录里出现「像源码但不受支持」的扩展名时返回这些文件，让工具明确报错而不是静默漏编。
+    private static func unsupportedSources(in directory: URL) -> [URL] {
+        let keys: [URLResourceKey] = [.isRegularFileKey]
+        guard let walker = FileManager.default.enumerator(at: directory,
+                                                         includingPropertiesForKeys: keys,
+                                                         options: [.skipsHiddenFiles],
+                                                         errorHandler: nil) else { return [] }
+        var files: [URL] = []
+        for case let file as URL in walker {
+            let values = try? file.resourceValues(forKeys: Set(keys))
+            guard values?.isRegularFile == true else { continue }
+            if unsupportedSourceExtensions.contains(file.pathExtension.lowercased()) {
+                files.append(file)
+            }
+        }
+        return files.sorted { $0.path < $1.path }
+    }
+
+    /// 每个源文件所在目录 + 它们共同的工程根目录作为 `-I`，
+    /// 支持 `#import "Local.h"` 与同目录/子目录头文件，又不会把 `/` 之类塞进搜索路径。
+    private static func headerSearchPaths(sources: [URL], root: String?) -> [String] {
+        var dirs = Set<String>()
+        for source in sources { dirs.insert(source.deletingLastPathComponent().path) }
+        if let root {
+            dirs.insert(root)
+        } else {
+            var components = sources.first?.deletingLastPathComponent().pathComponents ?? []
+            for source in sources.dropFirst() {
+                let other = source.deletingLastPathComponent().pathComponents
+                var shared: [String] = []
+                for (a, b) in zip(components, other) {
+                    guard a == b else { break }
+                    shared.append(a)
+                }
+                components = shared
+            }
+            if components.count > 1 {
+                dirs.insert(NSString.path(withComponents: components))
+            }
+        }
+        return dirs.sorted()
+    }
+
+    /// 自动识别 bridging header：`<Module>-Bridging-Header.h`、
+    /// `Bridging-Header.h`，或任意 `*-Bridging-Header.h`（取排序第一个）。
+    private static func bridgingHeader(sources: [URL], directory: String?, module: String) -> URL? {
+        let fm = FileManager.default
+        var roots = Set<String>()
+        if let directory { roots.insert(directory) }
+        for source in sources where source.pathExtension.lowercased() == "swift" {
+            roots.insert(source.deletingLastPathComponent().path)
+        }
+        let preferred = [module + "-Bridging-Header.h", "Bridging-Header.h"]
+        for root in roots.sorted() {
+            for name in preferred {
+                let candidate = (root as NSString).appendingPathComponent(name)
+                if fm.fileExists(atPath: candidate) { return URL(fileURLWithPath: candidate) }
+            }
+            let items = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+            for name in items.sorted() where name.hasSuffix("-Bridging-Header.h") {
+                let candidate = (root as NSString).appendingPathComponent(name)
+                if fm.fileExists(atPath: candidate) { return URL(fileURLWithPath: candidate) }
+            }
+        }
+        return nil
+    }
+
+    /// 每个源文件编成独立 `.o`；Swift 用 `-primary-file` 逐文件编，`-module-name` 保持一致。
+    /// 若某个 Swift 文件单独编译失败，再退回「全部 Swift 一次编成一个 .o」（原有可用路径）。
+    private static func compileAll(loaded: NanoMuseNyxian.Loaded,
+                                   swiftSources: [URL],
+                                   clangSources: [URL],
+                                   objectsDir: URL,
+                                   sdk: String,
+                                   res: String,
+                                   moduleCache: URL,
+                                   moduleName: String,
+                                   includeDirs: [String],
+                                   bridgingHeader: URL?) -> (ok: Bool, objects: [URL], lines: [String]) {
+        let fm = FileManager.default
+        let frameworks = sdk + "/System/Library/Frameworks"
+        var log: [String] = []
+        var index = 0
+        var swiftObjects: [URL] = []
+        var clangObjects: [URL] = []
+        var swiftPerFileOK = true
+        var usedWholeModule = false
+        var clangOK = true
+
+        func objectURL(for source: URL) -> URL {
+            index += 1
+            let base = source.lastPathComponent.replacingOccurrences(of: ".", with: "_")
+            let prefix = String(index)
+            let padded = String(repeating: "0", count: max(0, 3 - prefix.count)) + prefix
+            return objectsDir.appendingPathComponent(padded + "_" + base + ".o")
+        }
+
+        func swiftBaseArgs() -> [String] {
+            var args = ["-target", target,
+                        "-sdk", sdk,
+                        "-isysroot", sdk,
+                        "-F", frameworks,
+                        "-I", sdk + "/usr/lib/swift",
+                        "-L", sdk + "/usr/lib/swift",
+                        "-module-cache-path", moduleCache.path]
+            if !res.isEmpty { args += ["-resource-dir", res] }
+            args += ["-module-name", moduleName]
+            for dir in includeDirs { args += ["-I", dir] }
+            if let bridgingHeader { args += ["-import-objc-header", bridgingHeader.path] }
+            return args
+        }
+
+        // 每个 .swift 编成独立 .o：多文件时用 -primary-file，其余文件作为同模块输入，
+        // -module-name 保持一致。若逐文件失败，再回退为整模块一次编译（旧路径）。
+        for source in swiftSources {
+            let object = objectURL(for: source)
+            try? fm.removeItem(at: object)
+            var args = swiftBaseArgs()
+            if swiftSources.count > 1 {
+                args += ["-c", "-primary-file", source.path]
+                args += swiftSources.filter { $0 != source }.map(\.path)
+            } else {
+                args += ["-c", source.path]
+            }
+            args += ["-o", object.path]
+
+            log.append("      [swift] \(source.path)")
+            let started = Date()
+            let result = loaded.run(args, swift: true)
+            let size = ((try? fm.attributesOfItem(atPath: object.path))?[.size] as? NSNumber)?.intValue ?? 0
+            log.append("      ok=\(result.ok) · \(String(format: "%.1fs", Date().timeIntervalSince(started))) · \(size) B")
+            log.append(indent(result.log))
+            guard result.ok, fm.fileExists(atPath: object.path), size > 0 else {
+                swiftPerFileOK = false
+                log.append("ERR Swift 编译失败：\(source.path)")
+                log.append("    常见原因：缺少 Swift 资源目录、SDK 不匹配、源码语法错误、bridging header 路径不对。")
+                continue
+            }
+            swiftObjects.append(object)
+        }
+
+        if !swiftPerFileOK, swiftSources.count > 1 {
+            log.append("      逐文件 Swift 编译失败，回退为整模块一次编译…")
+            swiftObjects = []
+            let object = objectsDir.appendingPathComponent("swift-whole-module.o")
+            try? fm.removeItem(at: object)
+            var args = swiftBaseArgs()
+            args += ["-emit-object", "-o", object.path]
+            args += swiftSources.map(\.path)
+            let result = loaded.run(args, swift: true)
+            let size = ((try? fm.attributesOfItem(atPath: object.path))?[.size] as? NSNumber)?.intValue ?? 0
+            log.append("      [swift] 整模块（\(swiftSources.count) 个文件）ok=\(result.ok) · \(size) B")
+            log.append(indent(result.log))
+            if result.ok, fm.fileExists(atPath: object.path), size > 0 {
+                swiftObjects = [object]
+                usedWholeModule = true
+            } else {
+                log.append("ERR Swift 整模块编译失败")
+                log.append("    常见原因：缺少 Swift 资源目录、SDK 不匹配、源码语法错误、bridging header 路径不对。")
+            }
+        }
+
+        for source in clangSources {
+            let ext = source.pathExtension.lowercased()
+            let object = objectURL(for: source)
+            try? fm.removeItem(at: object)
+            var args = ["-target", target,
+                        "-isysroot", sdk,
+                        "-F", frameworks,
+                        "-c", source.path,
+                        "-o", object.path]
+            if ext == "m" || ext == "mm" {
+                args += ["-fobjc-runtime=ios-26.5"]
+            }
+            for dir in includeDirs { args += ["-I", dir] }
+
+            log.append("      [\(ext)] \(source.path)")
+            let started = Date()
+            let result = loaded.run(args, swift: false)
+            let size = ((try? fm.attributesOfItem(atPath: object.path))?[.size] as? NSNumber)?.intValue ?? 0
+            log.append("      ok=\(result.ok) · \(String(format: "%.1fs", Date().timeIntervalSince(started))) · \(size) B")
+            log.append(indent(result.log))
+            guard result.ok, fm.fileExists(atPath: object.path), size > 0 else {
+                clangOK = false
+                log.append("ERR \(ext.uppercased()) 编译失败：\(source.path)")
+                continue
+            }
+            clangObjects.append(object)
+        }
+
+        let objects = swiftObjects + clangObjects
+        let swiftOK: Bool
+        if swiftSources.isEmpty {
+            swiftOK = true
+        } else if swiftSources.count == 1 {
+            swiftOK = swiftObjects.count == 1
+        } else if usedWholeModule {
+            // 整模块成功：只产出一个合并后的 .o
+            swiftOK = swiftObjects.count == 1
+        } else {
+            // 逐文件编译：每个源文件各一个 .o
+            swiftOK = swiftObjects.count == swiftSources.count
+        }
+        return (swiftOK && clangOK && !objects.isEmpty, objects, log)
     }
 
     private static func defaultName(for url: URL) -> String {
@@ -371,6 +619,16 @@ enum NanoMuseSwiftTipaTool {
         if !candidate.isEmpty { return candidate }
         let slug = appName.lowercased().replacingOccurrences(of: " ", with: "-")
         return "com.nanocode.\(slug)"
+    }
+
+    /// Swift 的 `-module-name` 必须是合法标识符（不能以数字开头），与 App 名解耦。
+    private static func moduleIdentifier(_ appName: String) -> String {
+        var identifier = appName.filter { $0.isLetter || $0.isNumber || $0 == "_" }
+        if identifier.isEmpty { identifier = "App" }
+        if let first = identifier.first, first.isNumber {
+            identifier = "App" + identifier
+        }
+        return identifier
     }
 
     private static func normalizedOutputName(_ raw: String?, appName: String) -> String {
