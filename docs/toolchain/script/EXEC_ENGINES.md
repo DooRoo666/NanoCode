@@ -100,3 +100,57 @@ printf 'printf "sum=%%s\\n" "$x"\n' > /tmp/t.sh
 判定：写完立即 `xxd /tmp/t.sh | head -2` 看是否 `25 73`（=%s）。
 **凡嵌套 printf，一律先 xxd 验字节再执行。**
 
+
+---
+
+## 八、宿主文件系统与执行限制（第二轮实测，全部验证过）
+
+### 8.1 iSH 与宿主不是同一文件系统 ★
+
+- iSH 里 `/var/mobile/Documents` 是**沙箱内假路径**，写进去的文件宿主完全看不到。
+- 反向也不通。**结论：不能在 iSH 写脚本交给宿主执行**，跨端搬运只能走
+  `/var/minis/workspace/` ↔ 宿主 `/private/var/mobile/Library/MinisChat/minis/<会话UUID>/`。
+
+### 8.2 宿主无法用 shebang 执行脚本 ★
+
+| 方式 | 结果 |
+|------|------|
+| `#!/bin/sh` + `./x.sh` | ❌ `No such file or directory`（**宿主没有 /bin/sh**）|
+| `#!/private/.../bash.real` + `./x.sh` | ❌ `Operation not permitted`（sandbox 禁 shebang 执行）|
+| `bash.real x.sh` | ✅ 正常 |
+| `bash.real -c '...'` | ✅ 正常 |
+
+**结论：宿主侧脚本执行只有一条路 —— 显式 `bash.real <文件>` 或 `bash.real -c '<cmd>'`。**
+不要写 `./script.sh`、不要 `sh script.sh`（nsh 读脚本会丢换行）。
+
+### 8.3 realpath 才能拿到真绝对路径 ★
+
+nsh 的 glob 展开在 `$(...)` / 变量赋值里会退化成**相对名**：
+
+```sh
+B=$(ls -d /var/containers/Bundle/Application/*/Minis.app/Helpers/bash.real)
+printf '%s\n' "$B"      # ✗ 输出 bash.real（相对名，不能用于 shebang/exec）
+P=$(realpath /var/containers/Bundle/Application/*/Minis.app/Helpers/bash.real)
+printf '%s\n' "$P"      # ✓ /private/var/containers/.../bash.real
+```
+
+**凡是 glob 结果要用作路径，一律套 `realpath`。**
+
+### 8.4 bash.real 的真实边界（比上一轮更精确）
+
+| 任务 | nsh | bash.real |
+|------|-----|-----------|
+| `ls \| wc -l` 管道 | ✅ `files=234` | ❌ 空（fork 外部命令失败）|
+| `$(ls)` 命令替换 | ✅ | ❌ 空 |
+| 纯内建 `for i in a b c` + `$(( ))` | ❌ 算术坏 | ✅ `count=4` |
+| `fact` 连乘循环 | ❌ | ✅ `fact=18` |
+
+**判定口诀：要调外部命令/管道 → nsh；要变量/算术/循环/条件 → bash.real。**
+两者不能混——bash.real 里只要出现外部命令，整段结果就是空。
+
+### 8.5 可用目录
+
+宿主可写：`/tmp` `/var/tmp` `/var/mobile/Documents`
+`/var/mobile/Library/Application Support/NanoCodex/codex-home/work`（最稳，codex 工作区）
+
+⚠️ `/tmp` 下的可执行脚本会 `Operation not permitted`，但**作为 bash.real 的入参没问题**。
