@@ -200,18 +200,15 @@ enum NanoMuseSDKDownloader {
 
         // 进度回调
         if let progress {
-            let session = URLSession(configuration: .default) { configuration in
-                configuration.timeoutIntervalForResource = 60 * 60
-                return configuration
-            }
+            let cfg = URLSessionConfiguration.default
+            cfg.timeoutIntervalForResource = 60 * 60
+            let session = URLSession(configuration: cfg)
             let observer = NanoMuseTaskProgressMonitor(task: task) { p in
                 DispatchQueue.main.async { progress(p) }
             }
-            task.resume()
             observer.start()
-        } else {
-            task.resume()
         }
+        task.resume()
     }
 
     // MARK: - SHA256
