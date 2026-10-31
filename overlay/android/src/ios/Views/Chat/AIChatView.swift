@@ -3604,6 +3604,11 @@ struct AIChatView: View {
             ) { // nanoMuse:
                 nmPillField // nanoMuse:
             } // nanoMuse:
+            // nanoMuse: 模型 / 强度芯片条放在胶囊**外面**。放进 pill content 里会被
+            // 胶囊的 inset 与高度约束挤掉，也不该跟输入框抢同一行。
+            nmComposerModelChips // nanoMuse:
+                .padding(.horizontal, 14) // nanoMuse:
+                .padding(.top, 4) // nanoMuse:
         } // nanoMuse:
     } // nanoMuse:
 
@@ -3613,7 +3618,6 @@ struct AIChatView: View {
     // an estimate (the field tells no more), the iPad resize height still applies.
     private var nmPillField: AnyView { // nanoMuse:
         AnyView( // nanoMuse:
-            VStack(spacing: 0) { // nanoMuse: 输入框 + 常驻芯片条必须同处一个纵向容器，否则下面那行只是悬空的表达式
             NanoMuseComposerField( // nanoMuse:
                 text: inputTextBinding, // nanoMuse:
                 isFocused: $inputFocused, // nanoMuse:
@@ -3628,8 +3632,6 @@ struct AIChatView: View {
             ) // nanoMuse:
             // nanoMuse: never below one line (NanoMuseComposerWatch.fieldFloor is the natural one-line height).
             .frame(minHeight: NanoMuseComposerWatch.fieldFloor) // nanoMuse:
-            nmComposerModelChips // nanoMuse: 现在真正挂在输入框正下方
-            } // nanoMuse: end VStack
         ) // nanoMuse:
     } // nanoMuse:
 
