@@ -1,0 +1,88 @@
+// NanoCodeHost — 常驻宿主（不引用 UIKit 头，纯 runtime 调用 UIApplicationMain）
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <dlfcn.h>
+#import <stdio.h>
+#import <stdarg.h>
+#import <unistd.h>
+
+extern int UIApplicationMain(int argc, char *argv[], NSString *principalClassName,
+                             NSString *delegateClassName);
+
+static FILE *gLog = NULL;
+
+static void LOG(NSString *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    NSString *s = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    if (gLog) { fprintf(gLog, "[nano] %s\n", s.UTF8String); fflush(gLog); }
+}
+
+static void OpenLog(void) {
+    gLog = fopen("/var/mobile/Documents/nyxian/nanolog.txt", "w");
+    if (!gLog) {
+        NSString *p = [NSTemporaryDirectory() stringByAppendingPathComponent:@"nanolog.txt"];
+        gLog = fopen(p.fileSystemRepresentation, "w");
+    }
+}
+
+static void Stage1(void) {
+    NSBundle *b = [NSBundle mainBundle];
+    LOG(@"start pid=%d", (int)getpid());
+    LOG(@"bundle=%@", [b bundlePath]);
+
+    NSString *core = [[b bundlePath]
+        stringByAppendingPathComponent:@"Frameworks/CoreCompiler.framework/CoreCompiler"];
+    LOG(@"core=%@", core);
+    LOG(@"exists=%d readable=%d",
+        (int)[[NSFileManager defaultManager] fileExistsAtPath:core],
+        (int)[[NSFileManager defaultManager] isReadableFileAtPath:core]);
+
+    void *h = dlopen(core.fileSystemRepresentation, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        const char *e = dlerror();
+        LOG(@"dlopen failed: %s", e ? e : "null");
+        return;
+    }
+    LOG(@"dlopen ok handle=%p", h);
+
+    const char *syms[] = { "CCDriverCreate", "CCDriverCreateJobs", "CCJobExecuteJob",
+                           "CCJobCreate", "CCJobCreateArguments",
+                           "CCSwiftCompilerJobExecute", "CCSDKGetTypeID",
+                           "CCDriverCopySysrootURL" };
+    for (int i = 0; i < 8; i++) {
+        LOG(@"dlsym %s -> %p", syms[i], dlsym(h, syms[i]));
+    }
+    LOG(@"stage1 done");
+}
+
+static BOOL gRan = NO;
+
+@interface NCHAppDelegate : NSObject @end
+
+@implementation NCHAppDelegate
+
+- (BOOL)application:(id)app didFinishLaunchingWithOptions:(id)opts {
+    LOG(@"didFinishLaunching");
+    if (!gRan) { gRan = YES; Stage1(); }
+    return YES;
+}
+
+@end
+
+int main(int argc, char **argv) {
+    @autoreleasepool {
+        if (!gLog) OpenLog();
+        LOG(@"main entered argc=%d", argc);
+
+        // 先跑一次 stage1，确保即使 UI 起不来也有日志
+        Stage1();
+        gRan = YES;
+
+        LOG(@"entering UIApplicationMain");
+        int rc = UIApplicationMain(argc, argv, nil, @"NCHAppDelegate");
+        LOG(@"UIApplicationMain returned %d", rc);
+        return rc;
+    }
+}
