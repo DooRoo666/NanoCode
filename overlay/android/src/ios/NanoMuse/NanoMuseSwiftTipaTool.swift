@@ -471,6 +471,9 @@ enum NanoMuseSwiftTipaTool {
                                    bridgingHeader: URL?) -> (ok: Bool, objects: [URL], lines: [String]) {
         let fm = FileManager.default
         let frameworks = sdk + "/System/Library/Frameworks"
+        // UIKit 等框架的头文件会 include 同级的 SubFrameworks（如 UIUtilities），
+        // 只加 Frameworks 会报 "module includes header from ... SubFrameworks"
+        let subFrameworks = sdk + "/System/Library/SubFrameworks"
         var log: [String] = []
         var index = 0
         var swiftObjects: [URL] = []
@@ -492,6 +495,7 @@ enum NanoMuseSwiftTipaTool {
                         "-sdk", sdk,
                         "-isysroot", sdk,
                         "-F", frameworks,
+                        "-F", subFrameworks,
                         "-I", sdk + "/usr/lib/swift",
                         "-L", sdk + "/usr/lib/swift",
                         "-module-cache-path", moduleCache.path]
@@ -559,10 +563,15 @@ enum NanoMuseSwiftTipaTool {
             var args = ["-target", target,
                         "-isysroot", sdk,
                         "-F", frameworks,
+                        "-F", subFrameworks,
                         "-c", source.path,
                         "-o", object.path]
             if ext == "m" || ext == "mm" {
-                args += ["-fobjc-runtime=ios-26.5"]
+                args += ["-fobjc-runtime=ios-26.5", "-fobjc-arc"]
+            }
+            if ext == "mm" {
+                // ObjC++：需要 C++ 标准库
+                args += ["-x", "objective-c++", "-stdlib=libc++"]
             }
             for dir in includeDirs { args += ["-I", dir] }
 

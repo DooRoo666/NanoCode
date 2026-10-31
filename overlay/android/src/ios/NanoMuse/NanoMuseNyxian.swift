@@ -288,7 +288,10 @@ enum NanoMuseNyxian {
         case .failure(let error):
             return (false, "\(error)")
         case .success(let toolchain):
-            var args = ["clang", "-target", target, "-O1"]
+            // 注意：不要带 "clang" 前缀 —— CCDriverCreate 内部会自己 prepend
+            // "clang" + "-fuse-ld=lld"（见 cc/CCDriver.cpp:175-177）。
+            // 重复传入会让 argv 变成 "clang clang ..."，触发 driver 内部 report_bad_alloc 崩溃。
+            var args = ["-target", target, "-O1"]
             if let sdk = detectSDK() {
                 args += ["-isysroot", sdk.path]
             }
@@ -306,7 +309,7 @@ enum NanoMuseNyxian {
         case .failure(let error):
             return (false, "\(error)")
         case .success(let toolchain):
-            let args = ["clang", "-target", target, "-c", source.path, "-o", output.path]
+            let args = ["-target", target, "-c", source.path, "-o", output.path]
             let result = toolchain.run(args)
             let exists = FileManager.default.fileExists(atPath: output.path)
             return (result.ok && exists, result.log + "\n产物: \(exists ? "已生成 \(fileSize(output))" : "缺失")")
@@ -708,19 +711,26 @@ enum NanoMuseNyxian {
         let lib = sdk + "/usr/lib/swift"
         let sysLib = sdk + "/usr/lib"
         let fw = sdk + "/System/Library/Frameworks"
+        // UIKit 等框架的头文件会 include 同级的 SubFrameworks（如 UIUtilities），
+        // 只加 Frameworks 会报 "module includes header from ... SubFrameworks"
+        let subFw = sdk + "/System/Library/SubFrameworks"
         let resLib = res.isEmpty ? "" : res + "/swift/iphoneos"
         let frameworkArgs = frameworks.flatMap { ["-framework", $0] }
         let objectArgs = objs.map(\.path)
 
         // Swift driver 认 `-sdk`；clang driver 认 `-isysroot`。
+        // 注意：不要带 "clang" 前缀 —— CCDriverCreate 内部自己 prepend "clang"。
         var search = swift
-            ? ["-sdk", sdk, "-target", target, "-L", lib, "-L", sysLib, "-F", fw]
-            : ["clang", "-target", target, "-isysroot", sdk, "-L", sysLib, "-F", fw]
+            ? ["-sdk", sdk, "-target", target, "-L", lib, "-L", sysLib, "-F", fw, "-F", subFw]
+            : ["-target", target, "-isysroot", sdk, "-L", sysLib, "-F", fw, "-F", subFw]
         if !resLib.isEmpty { search += ["-L", resLib] }
 
         var runtime: [String] = []
         if objc { runtime.append("-lobjc") }
-        if cxx { runtime.append("-lc++") }
+        if cxx {
+            // ObjC++ 需要 libc++abi（异常展开：__Unwind_Resume 等）和 libSystem（memcpy 等）
+            runtime += ["-lc++", "-lc++abi", "-lSystem"]
+        }
         if swift { runtime += ["-lswiftCore", "-lswiftFoundation"] }
 
         // 第一组带全部运行时；兜底组去掉 Swift 运行时（Swift driver 通常会自动带），
@@ -729,7 +739,7 @@ enum NanoMuseNyxian {
         if swift {
             var noSwiftRuntime: [String] = []
             if objc { noSwiftRuntime.append("-lobjc") }
-            if cxx { noSwiftRuntime.append("-lc++") }
+            if cxx { noSwiftRuntime += ["-lc++", "-lc++abi", "-lSystem"] }
             sets.append(search + frameworkArgs + noSwiftRuntime + ["-o", bin.path] + objectArgs)
         }
         sets.append(search + frameworkArgs + ["-o", bin.path] + objectArgs)
