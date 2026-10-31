@@ -1,28 +1,19 @@
 #!/bin/sh
-# nsh_run.sh —— host_exec 多行可靠执行封装
+# nsh_run.sh — 在宿主侧用 bash.real 可靠执行多行脚本
 #
-# 背景：host_exec 的 nsh 层会把命令里的真实换行(\n)当成空格，
-# 导致多行命令被拼成一条、变量丢失、$? 读错行、甚至整体无输出。
-# 本脚本把"多行"在写入时压成一条用 ';' 分隔的单行，再交给 sh 执行，
-# 从而绕开 nsh 的换行吞并问题。
+# 结论（实测定稿）：
+#   · 写文件换行不丢：printf 'a\nb\n' > f  /  echo 'x' >> f  都正确
+#   · 丢换行的是「nsh 读脚本执行」这一步：sh script.sh  →  全部粘成一行
+#   · 解药：用 bash.real 执行脚本（能跑 内建命令 + 控制流 + 算术 + 函数）
+#           bash.real 不能跑 外部命令 / 管道 / 命令替换（Bus error）
 #
-# 用法：
-#   sh nsh_run.sh script.nsh        # 执行文件里的多行脚本
-#   或把命令逐行写进文件后调用
+# 用法（宿主侧 host_exec，整条命令仍须单行，用 ; 分隔）：
+#   1) printf 'x=5\necho "v=$x"\n' > /tmp/s.sh; bash.real /tmp/s.sh
+#   2) sh nsh_run.sh /tmp/s.sh          # 本脚本仅做 bash.real 定位转发
 #
-# 写法约定（为保证可靠）：
-#   - 每行用 ';' 结尾或依赖下面的拼接
-#   - 取退出码要 rc=$?; 紧跟其后，不要跨行
-#   - 输出用 printf '...\n' 而非裸 echo
+# 定位 bash.real（glob 展开，不硬编码 UUID）。注意：本脚本自身被「nsh 读」
+# 时也会丢换行，所以**必须由 bash.real 来执行本脚本**，或直接把内容交给
+# bash.real -c。本文件主要用于人类阅读与拷贝模板，不保证被 sh 调用可用。
 
-set -e
-src="$1"
-[ -f "$src" ] || { printf '用法: sh nsh_run.sh <script-file>\n'; exit 2; }
-
-# 把非空、非注释行用 ';' 连接成一条命令
-joined=$(awk 'BEGIN{ORS=""} /^[[:space:]]*($|#)/{next} {gsub(/^[ \t]+|[ \t]+$/,""); print $0 ";"}' "$src")
-[ -z "$joined" ] && { printf '空脚本\n'; exit 0; }
-
-printf '== 执行 ==\n'
-sh -c "$joined"
-printf '== rc=%s ==\n' "$?"
+BASHR=/var/containers/Bundle/Application/*/Minis.app/Helpers/bash.real
+exec "$BASHR" "$@"

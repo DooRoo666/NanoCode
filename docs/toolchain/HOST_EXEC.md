@@ -32,13 +32,15 @@
 | `for f in a b c; do ...; done` 单行 | ✅ 正常 |
 | 跨行 `for/do/done` | ❌ 崩（`nsh: do/done: No such file`） |
 | `rc=$?` 紧跟目标命令 | ✅ 正确 |
-| `printf` + 显式 `\n` | ✅（但见下注） |
-| `echo '...' >> file` 追加多行 | ⚠️ 换行丢失，写进同一行 |
-| 函数定义 | ⚠️ 不保证，避免 |
-| `sleep` | ⚠️ 卡工具调用；用 `delay` 参数替代 |
+| `printf 'a\nb\n' > file` 写多行文件 | ✅ **换行完整保留**（xxd 已验证）| 
+| `echo 'x' >> file` 逐行追加 | ✅ **换行完整保留**（xxd 已验证）| 
+| 多行脚本用 `sh 脚本` 执行 | ❌ nsh 读脚本丢换行，全部粘成一行 |
+| 多行脚本用 `bash.real 脚本` 执行 | ✅ 变量/算术/for/if/函数/退出码全对 |
 
-注：`printf 'a\nb\n' > f` 与 `echo >> f` 在 nsh 下换行会被丢，
-**要写多行文件，用本仓库 `script/nsh_run.sh` 或走 iSH(`shell_execute`)**。
+注（**已更正**）：**写文件换行从来不会丢**——`printf`/`echo >>` 都正确（`xxd` 确认
+`4c31 0a 4c32 0a`）。之前"换行丢失"的假象，是 **nsh 执行时读脚本**丢换行造成的。
+**正确姿势：写文件照常用 printf/echo；执行多行脚本必须用 `bash.real`，不能用 `sh`。**
+bash.real 只跑内建命令，含外部命令/管道会 Bus error——详见 `script/EXEC_ENGINES.md`。
 
 ## 四、铁律（照抄即可）
 
