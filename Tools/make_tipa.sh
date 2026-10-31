@@ -71,6 +71,32 @@ mkdir -p "$OUT/Payload"
 cp -R "$APP" "$OUT/Payload/$APP_NAME.app"
 TARGET="$OUT/Payload/$APP_NAME.app"
 
+# == 体积优化：剥离主二进制与内嵌 dylib 的调试符号 ==
+# Release 构建的 Swift 二进制仍会保留 __DWARF / 符号表，本项目实测占几十 MB，
+# 对运行零影响（崩溃栈仍能靠 dSYM 还原，且 dSYM 不随包分发）。
+# 只处理 Mach-O，跳过 Helpers（MT-Agent 已签好，重签会破坏权限 blob）。
+if command -v strip >/dev/null 2>&1; then
+  echo "== 体积优化：strip 调试符号 =="
+  before=$(du -sk "$TARGET" 2>/dev/null | awk '{print $1}')
+  if is_macho "$TARGET/$APP_NAME"; then
+    strip -x -S "$TARGET/$APP_NAME" 2>/dev/null \
+      && echo "   stripped: $APP_NAME" || echo "   WARN: strip $APP_NAME 失败（继续）"
+  fi
+  # 内嵌 framework / dylib（跳过 Helpers 与 .appex，后者由各自签名管理）
+  while IFS= read -r -d '' f; do
+    case "$f" in
+      */Helpers/*) continue ;;
+    esac
+    if is_macho "$f"; then
+      strip -x -S "$f" 2>/dev/null || true
+    fi
+  done < <(find "$TARGET" -type f \( -name "*.dylib" -o -path "*/Frameworks/*" \) -print0 2>/dev/null)
+  after=$(du -sk "$TARGET" 2>/dev/null | awk '{print $1}')
+  echo "   strip 前 ${before} KB -> 后 ${after} KB（省 $((before - after)) KB）"
+else
+  echo "== 体积优化：未找到 strip，跳过 =="
+fi
+
 echo "== 0/4 Helpers（MT-Agent 工具链：codex-sign / ca-filetool / bash.real + 链接） =="
 HELPERS_SRC="$ROOT/vendor/helpers"
 if [ -d "$HELPERS_SRC" ]; then

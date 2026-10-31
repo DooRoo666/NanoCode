@@ -214,7 +214,7 @@ enum NanoMuseSDKDownloader {
     // MARK: - SHA256
 
     /// 流式计算文件 SHA256（分块读，不把整个文件塞进内存）
-    private static func sha256(of url: URL) throws -> String {
+    static func sha256(of url: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 

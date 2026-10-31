@@ -196,6 +196,25 @@ enum NanoMuseSwiftTipaTool {
             }
             log.append(contentsOf: progress.lines())
         }
+
+        // 编译器不再内置在包里（省 178 MB），首次编译时按需从 GitHub release 下载。
+        if !NanoMuseCoreCompilerDownloader.isInstalled() {
+            log.append("编译器未就位，开始下载 CoreCompiler（约 71 MB，仅首次）…")
+            let result: Result<URL, Error> = await withCheckedContinuation { cont in
+                NanoMuseCoreCompilerDownloader.ensureInstalled { pct in
+                    log.append(String(format: "  CoreCompiler 下载中 %.0f%%", pct * 100))
+                } completion: { r in
+                    cont.resume(returning: r)
+                }
+            }
+            if case .failure(let e) = result {
+                log.append("ERR CoreCompiler 下载失败：\(e.localizedDescription)")
+                log.append("提示：可稍后重试，或检查网络能否访问 github.com")
+                return finish("", code: -1)
+            }
+            log.append("CoreCompiler 就位：\(NanoMuseCoreCompilerDownloader.installedFrameworkPath.path)")
+        }
+
         guard fm.fileExists(atPath: sdk.path) else {
             log.append("ERR SDK 路径不存在：\(sdk.path)")
             return finish("", code: 1)

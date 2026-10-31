@@ -96,7 +96,7 @@ jobs:
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
           # 新增的运行时下载/解包源文件也必须注册，否则不会被编译。
-          for extra in NanoMuseRuntimeInstaller.swift NanoMuseTarGz.swift NanoMuseEnvCheck.swift NanoMuseNyxian.swift; do
+          for extra in NanoMuseRuntimeInstaller.swift NanoMuseTarGz.swift NanoMuseEnvCheck.swift NanoMuseNyxian.swift NanoMuseCoreCompilerDownloader.swift; do
             if [ -f "upstream/android/src/ios/NanoMuse/$extra" ]; then
               python3 Tools/apply_overlay.py \
                 --project upstream/android/src/ios/Minis.xcodeproj \
@@ -151,13 +151,9 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           echo "found $APP"
 
-      - name: Fetch runtime deps (CoreCompiler)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p Runtimes
-          gh release download runtime-deps --pattern CoreCompiler.zip --dir Runtimes --clobber
-          ls -lh Runtimes/CoreCompiler.zip
+      # 不内置 CoreCompiler（178 MB）：Runtimes/ 留空，App 首启动时按需
+      # 从 GitHub release 下载到 Runtimes/frameworks/。make_tipa.sh 里那段
+      # 预置逻辑是 `if [ -f Runtimes/CoreCompiler.zip ]` 条件式的，不下载即跳过。
 
       - name: Package TIPA (three-tier ldid signing)
         run: bash Tools/make_tipa.sh "upstream/android/src/ios/${{ steps.app.outputs.path }}" dist
