@@ -12,3 +12,8 @@ __pycache__/
 .DS_Store
 _p/
 _probe/
+
+# 巨型运行时二进制 —— 托管在 release: runtime-deps，不进 git（GitHub 100MB 单文件限制）
+host/NanoCodeHost.app/
+*.tipa
+*.ipa
