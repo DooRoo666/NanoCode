@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "note": "SDK 来自公开开源源 xybp888/iOS-SDKs；其余工具来自 DooRoo666/NanoCode releases。sources.default 是 release 下载前缀，工具的 url 相对它拼接；工具也可自带绝对 urls 覆盖。",
+  "note": "所有工具均托管在 DooRoo666/NanoCode release: runtime-deps（CoreCompiler.zip / ld64.lld / ldid / iPhoneOS26.5.sdk.zip）。SDK 已上传到自有 release，是完整版（272 framework / 11526 文件，含 UIKit/Foundation/Swift 模块 + stdlib）。sources.default 是 release 下载前缀，工具的 url 相对它拼接；工具也可自带绝对 urls 覆盖。",
   "sources": {
     "default": [
       "https://github.com/DooRoo666/NanoCode/releases/download/runtime-deps",
@@ -19,7 +19,8 @@
       "description": "LLVM 链接器，.o → 可执行",
       "install": {
         "type": "file",
-        "url": "ld64.lld"
+        "url": "ld64.lld",
+        "sha256": "7e1d6c0e25ab53b382aed99dd0104b144d32ba1604fbe4076cf255e20ed21302"
       },
       "probe": {
         "file": "bin/ld64.lld"
@@ -33,7 +34,8 @@
       "description": "Mach-O 签名，TrollStore 必需",
       "install": {
         "type": "file",
-        "url": "ldid"
+        "url": "ldid",
+        "sha256": "7aff51035fba2359effa723ea67f3f970513ec85c7c0a3590e9841a07bf0ce51"
       },
       "probe": {
         "file": "bin/ldid"
@@ -48,11 +50,11 @@
       "install": {
         "type": "archive",
         "urls": [
-          "https://github.com/xybp888/iOS-SDKs/releases/download/iOS26.5-SDKs/iPhoneOS26.5.sdk.zip",
-          "https://ghproxy.net/https://github.com/xybp888/iOS-SDKs/releases/download/iOS26.5-SDKs/iPhoneOS26.5.sdk.zip"
+          "iPhoneOS26.5.sdk.zip",
+          "https://github.com/xybp888/iOS-SDKs/releases/download/iOS26.5-SDKs/iPhoneOS26.5.sdk.zip"
         ],
         "archive": "zip",
-        "sha256": "bed0f155d84e98ad8273b3bd57a0816ae5e772e1aa8539e6d79476221ce33173",
+        "sha256": "dc8aad82d291cb6180ab49186f9fa9c07b913c1e29b8a8450cf5b3ad3784bcb4",
         "skip_prefixes": [
           "__MACOSX/"
         ],
@@ -77,46 +79,11 @@
         "archive": "zip",
         "skip_prefixes": [
           "__MACOSX/"
-        ]
+        ],
+        "sha256": "8b9c34d197dc3379cadf4959feae20e40df1e659c2704fa83892aa1ae9f4739c"
       },
       "probe": {
         "file": "CoreCompiler.framework/CoreCompiler"
-      }
-    },
-    "swiftrt": {
-      "label": "Swift 运行时资源",
-      "kind": "archive",
-      "size": "~142MB",
-      "required": false,
-      "description": "stdlib 模块与 resource-dir（Swift 源码用 import Foundation 时必需）",
-      "install": {
-        "type": "archive",
-        "url": "Shared-swift.zst"
-      },
-      "probe": {
-        "file": "Shared/swift/module.modulemap"
-      }
-    },
-    "swift_tipa": {
-      "label": "C/ObjC/ObjC++/Swift 源码 → TIPA",
-      "kind": "builtin",
-      "required": false,
-      "description": "宿主进程内把 C / Objective-C / Objective-C++ / Swift 源码（可混合工程）逐个编译为 .o、链接、签名并打包成 .tipa（arm64e，不 fork、不走 iSH）",
-      "implementation": {
-        "swift": "overlay/android/src/ios/NanoMuse/NanoMuseSwiftTipaTool.swift",
-        "tool_name": "swift_tipa",
-        "entry": "NanoMuseSwiftTipaTool.execute(source:name:bundleID:output:)"
-      },
-      "depends_on": [
-        "corecompiler",
-        "sdk",
-        "swiftrt"
-      ],
-      "source": {
-        "compiler": "NanoMuseNyxian.load() / Loaded.run(args, swift: true) for .swift, swift: false (clang) for .c/.m/.mm",
-        "linker": "NanoMuseNyxian.linkAppObjects(...)（多 .o + -lobjc / -lc++ / Swift 运行时）",
-        "signer": "NanoMuseMachSigner.sign(path:entitlements:identifier:), fallback codex-sign",
-        "packager": "NanoMuseTipaBuilder.build(appPath:entitlements:outputName:)"
       }
     }
   }
