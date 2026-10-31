@@ -148,20 +148,40 @@ enum NanoMuseCodexModels {
     }
 
     /// 读取 nanoMuse 当前 agent loop 的首选项（形如 `<providerID>/<model>`）。
+    ///
+    /// 注意：agent loop 的条目存在 `ProviderConfigStore`（SQLite）里，**不在 UserDefaults**。
+    /// 早先版本读 `defaults.agentLoopEntries`，那个键永远不存在 → 一路回退到
+    /// `instances.first` → 用户明明选了 Go，路由页却显示 Own。这里必须走 store。
     @MainActor
     private static func currentAgentLoopEntry() -> String? {
-        let defaults = UserDefaults.standard
-        guard let raw = defaults.string(forKey: "defaults.agentLoopEntries"),
-              let data = raw.data(using: .utf8),
-              let list = (try? JSONSerialization.jsonObject(with: data)) as? [String],
-              let first = list.first, !first.isEmpty else { return nil }
-        return first
+        let store = ProviderConfigStore.shared
+        let cloudID = NanoMuseCloud.instance?.id
+        // 1) 会话里真正在用的模型优先级最高（用户刚在模型选择器里切过的那个）
+        for candidate in store.agentLoopModelEntryIds.map({ store.normalizeEntryRef($0) }) {
+            let providerId = String(candidate.prefix(while: { $0 != "/" }))
+            if !providerId.isEmpty, providerId != cloudID { return candidate }
+        }
+        // 2) 退而求其次：agent loop 的模型分组里排第一的成员（形如 `<providerID>/<model>`）
+        if let groupId = store.agentLoopGroupIds.first,
+           let group = store.modelGroups.first(where: { $0.id == groupId }) {
+            for member in group.memberEntryIds {
+                let providerId = String(member.prefix(while: { $0 != "/" }))
+                if !providerId.isEmpty, providerId != cloudID { return member }
+            }
+        }
+        return nil
     }
 
-    /// 把 `<providerID>/<model>` 解析成实例；也兼容 `<模型名>` 这种只给模型的写法。
+    /// 把 `<providerID>/<model>` 解析成实例；也兼容裸 `<providerID>`（分组场景）。
     @MainActor
     private static func resolveEntry(_ entry: String, in instances: [ProviderInstance],
                                      cloudID: String?) -> ProviderInstance? {
+        // 裸 providerId（分组里拿到的就是这种）
+        if !entry.contains("/") {
+            if let hit = instances.first(where: { $0.id == entry && $0.id != cloudID }) {
+                return hit
+            }
+        }
         if let slash = entry.firstIndex(of: "/") {
             let id = String(entry[entry.startIndex..<slash])
             if !id.isEmpty, let hit = instances.first(where: { $0.id == id && $0.id != cloudID }) {

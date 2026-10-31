@@ -3613,6 +3613,7 @@ struct AIChatView: View {
     // an estimate (the field tells no more), the iPad resize height still applies.
     private var nmPillField: AnyView { // nanoMuse:
         AnyView( // nanoMuse:
+            VStack(spacing: 0) { // nanoMuse: 输入框 + 常驻芯片条必须同处一个纵向容器，否则下面那行只是悬空的表达式
             NanoMuseComposerField( // nanoMuse:
                 text: inputTextBinding, // nanoMuse:
                 isFocused: $inputFocused, // nanoMuse:
@@ -3627,8 +3628,9 @@ struct AIChatView: View {
             ) // nanoMuse:
             // nanoMuse: never below one line (NanoMuseComposerWatch.fieldFloor is the natural one-line height).
             .frame(minHeight: NanoMuseComposerWatch.fieldFloor) // nanoMuse:
+            nmComposerModelChips // nanoMuse: 现在真正挂在输入框正下方
+            } // nanoMuse: end VStack
         ) // nanoMuse:
-        nmComposerModelChips // nanoMuse:
     } // nanoMuse:
 
     // nanoMuse: 输入框底部常驻的「模型 + 思考强度」芯片条。

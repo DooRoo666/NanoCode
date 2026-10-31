@@ -857,7 +857,9 @@ struct NanoMuseCodexView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 Picker("", selection: Binding(
-                    get: { NanoMuseCodexSettings.reasoningEffort },
+                    // 读 @State 而不是 UserDefaults：UserDefaults 变了 SwiftUI 不会重绘，
+                    // 选完立刻弹回原来的档位就是这个原因。
+                    get: { effort },
                     set: { NanoMuseCodexSettings.reasoningEffort = $0; effort = $0 }
                 )) {
                     ForEach(NanoMuseCodexSettings.reasoningEfforts, id: \.self) { e in
