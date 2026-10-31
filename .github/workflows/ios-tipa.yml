@@ -92,6 +92,9 @@ jobs:
         run: |
           set -euo pipefail
           cp overlay/android/src/ios/NanoMuse/*.swift upstream/android/src/ios/NanoMuse/
+          # nanoMuse-toolreg: 把 host_exec / codex_exec 接进 agent 工具链
+          # （schema 注册、switch 分支、SSE 卡片类型）。幂等，重复执行无副作用。
+          python3 overlay/tools_patch.py upstream/android/src/ios
           python3 Tools/apply_overlay.py \
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
