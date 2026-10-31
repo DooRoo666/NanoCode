@@ -20,7 +20,8 @@
       "install": {
         "type": "file",
         "url": "ld64.lld",
-        "sha256": "7e1d6c0e25ab53b382aed99dd0104b144d32ba1604fbe4076cf255e20ed21302"
+        "sha256": "7e1d6c0e25ab53b382aed99dd0104b144d32ba1604fbe4076cf255e20ed21302",
+        "saveAs": "bin/ld64.lld"
       },
       "probe": {
         "file": "bin/ld64.lld"
@@ -35,7 +36,8 @@
       "install": {
         "type": "file",
         "url": "ldid",
-        "sha256": "7aff51035fba2359effa723ea67f3f970513ec85c7c0a3590e9841a07bf0ce51"
+        "sha256": "7aff51035fba2359effa723ea67f3f970513ec85c7c0a3590e9841a07bf0ce51",
+        "saveAs": "bin/ldid"
       },
       "probe": {
         "file": "bin/ldid"
@@ -58,7 +60,8 @@
         "skip_prefixes": [
           "__MACOSX/"
         ],
-        "strip_prefix": "iPhoneOS26.5.sdk"
+        "strip_prefix": "iPhoneOS26.5.sdk",
+        "saveAs": "iPhoneOS26.5.sdk"
       },
       "probe": {
         "file": "iPhoneOS26.5.sdk/SDKSettings.json"
@@ -80,7 +83,8 @@
         "skip_prefixes": [
           "__MACOSX/"
         ],
-        "sha256": "8b9c34d197dc3379cadf4959feae20e40df1e659c2704fa83892aa1ae9f4739c"
+        "sha256": "8b9c34d197dc3379cadf4959feae20e40df1e659c2704fa83892aa1ae9f4739c",
+        "saveAs": "CoreCompiler.framework"
       },
       "probe": {
         "file": "CoreCompiler.framework/CoreCompiler"

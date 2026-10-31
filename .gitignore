@@ -17,3 +17,8 @@ _probe/
 host/NanoCodeHost.app/
 *.tipa
 *.ipa
+
+# 工具链下载的重型二进制与构建产物（走 release，不入库）
+docs/toolchain/tools/
+docs/toolchain/out/
+tools/probe/hello_arm64e

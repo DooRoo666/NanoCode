@@ -282,15 +282,27 @@ def load_tools():
 
 
 def build_urls(reg, inst):
-    """解析下载地址：注册表里的绝对 urls 优先，否则相对 sources 拼接"""
-    if inst.get("urls"):
-        return list(inst["urls"])
+    """解析下载地址。
+
+    优先级：
+      1. install.urls 里的绝对地址（带 ://）原样使用
+      2. install.urls 里的裸文件名 → 相对 sources.default 拼接
+      3. install.url 同理（裸文件名或绝对地址）
+    """
+    srcs = reg.get("sources", {}).get("default", []) or []
+    out = []
+    for u in (inst.get("urls") or []):
+        if "://" in u:
+            out.append(u)
+        else:
+            out += [s.rstrip("/") + "/" + u.lstrip("/") for s in srcs]
+    if out:
+        return out
     url = inst.get("url")
     if not url:
         return []
     if "://" in url:
         return [url]
-    srcs = reg.get("sources", {}).get("default", [])
     return [s.rstrip("/") + "/" + url.lstrip("/") for s in srcs]
 
 
@@ -312,7 +324,7 @@ def install(name):
     spec = {
         "urls": urls,
         "dest": BASE,
-        "save_as": inst.get("saveAs", "bin/" + name),
+        "save_as": inst.get("saveAs", name),
         "type": inst.get("type", "file"),
         "archive": inst.get("archive", "zip"),
         "sha256": inst.get("sha256"),

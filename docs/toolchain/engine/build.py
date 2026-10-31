@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""NanoCode 构建流水线：Swift 源码 → 可运行 .tipa
+"""NanoCode 构建流水线：Swift / C / ObjC / ObjC++ 源码 → 可运行 .tipa
 
 设计原则
 --------
 * 本体不内置任何工具，全部按需从 GitHub Release 下载
 * 每步失败都给出「人话」解释，而不是让用户对着 ld64 的报错猜
 * UI 入口符号（UIApplicationMain）在链接后强制校验 —— 这是黑屏的头号杀手
+* 语言按后缀自动分派：.swift .c .m .mm .o 全都走同一条命令
 
 用法
 ----
-  python3 build.py <source.swift> [--name App] [--bundle-id com.you.app]
-  python3 build.py --check          # 只检查工具链是否就绪
+  python3 build.py main.swift [--name App] [--bundle-id com.you.app]
+  python3 build.py app.c                          # C，iSH 内全自动一键出 tipa
+  python3 build.py app.mm                         # ObjC++，同上
+  python3 build.py main.o                         # 设备端已编好的 .o
+  python3 build.py --check                        # 只检查工具链是否就绪
 """
 import argparse
+import io
 import json
 import os
 import shutil
@@ -27,6 +32,33 @@ BASE = os.environ.get("NANOCODE_BASE", os.path.join(ROOT, "tools"))
 
 C_OK, C_NO, C_WARN, C_DIM, C_END = "\033[32m", "\033[31m", "\033[33m", "\033[90m", "\033[0m"
 
+# 语言 → 后缀 → clang -x 参数
+LANG_BY_EXT = {
+    ".swift": "swift",
+    ".c": "c",
+    ".m": "objc",
+    ".mm": "objcpp",
+    ".o": "object",
+}
+# clang -x 参数表：.o 不经编译器，直接进链接阶段
+CLANG_XLANG = {
+    "c": "c",
+    "objc": "objective-c",
+    "objcpp": "objective-c++",
+}
+
+
+def detect_lang(path):
+    """按后缀判断语言。返回 (lang, error)。"""
+    ext = os.path.splitext(path)[1].lower()
+    lang = LANG_BY_EXT.get(ext)
+    if lang is None:
+        return None, (
+            f"不认识的源码后缀 {ext or '(无)'}\n"
+            f"  支持: {' '.join(sorted(LANG_BY_EXT))}"
+        )
+    return lang, None
+
 
 def say(msg, kind="info"):
     tag = {"info": " ", "ok": C_OK + "✓", "err": C_NO + "✗",
@@ -39,6 +71,55 @@ def load_registry():
         return json.load(f)["tools"]
 
 
+EXEC_CACHE = os.environ.get("NANOCODE_EXEC_DIR", "/tmp/nanocode-bin")
+
+
+def _can_exec(path):
+    """真实试探执行：os.access 与 /proc/mounts 都无法反映 iSH fakefs 的 noexec 行为，
+    只有真的 spawn 一次才知道能不能跑。用最轻的参数（--version / -h）快速判定。"""
+    for probe in (["--version"], ["-h"], []):
+        try:
+            r = subprocess.run([path] + probe, capture_output=True, timeout=10)
+        except PermissionError:
+            return False
+        except (OSError, subprocess.SubprocessError):
+            return True  # 能 spawn 就不算 noexec 问题
+        # 能跑起来（哪怕非 0 退出）即视为可执行
+        return True
+    return True
+
+
+def _runnable(path):
+    """确保 path 处于可执行挂载点，否则复制到 EXEC_CACHE 并返回副本路径。
+
+    工作区（如 /var/minis）在 iSH fakefs 下无法原地执行（Permission denied），
+    而 /tmp 位于可执行的真实分区，把二进制镜像过去即可。
+    同一份文件用 size+mtime 做指纹，命中缓存则直接复用，避免每次构建重复拷贝。
+    """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return path
+    if _can_exec(path):
+        return path
+    os.makedirs(EXEC_CACHE, exist_ok=True)
+    # 关键：必须保留原始文件名（argv[0] 决定 lld 的多路复用行为），
+    # 用子目录做指纹隔离，避免改名后 ld64.lld 变成通用驱动而拒绝工作。
+    stamp = f"{st.st_size}.{int(st.st_mtime)}"
+    sub = os.path.join(EXEC_CACHE, stamp)
+    os.makedirs(sub, exist_ok=True)
+    dst = os.path.join(sub, os.path.basename(path))
+    if not os.path.exists(dst) or not _can_exec(dst):
+        tmp = dst + ".part"
+        shutil.copyfile(path, tmp)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, dst)
+    return dst
+
+
+_RUNNABLE_CACHE = {}
+
+
 def tool_path(tools, name):
     """返回工具可执行文件的绝对路径，未安装则返回 None"""
     t = tools.get(name)
@@ -46,7 +127,14 @@ def tool_path(tools, name):
         return None
     probe = t.get("probe", {})
     p = os.path.join(BASE, probe.get("file", ""))
-    return p if os.path.exists(p) else None
+    if not os.path.exists(p):
+        return None
+    # 只对可执行文件做 noexec 桥接；目录（如 SDK / framework）原样返回
+    if not os.path.isfile(p):
+        return p
+    if p not in _RUNNABLE_CACHE:
+        _RUNNABLE_CACHE[p] = _runnable(p)
+    return _RUNNABLE_CACHE[p]
 
 
 def tool_ready(tools, name):
@@ -79,8 +167,51 @@ def find_sdk_root(tools):
 
 
 def run(cmd, capture=True):
-    r = subprocess.run(cmd, capture_output=capture, text=True)
-    return r.returncode, (r.stdout or "") + (r.stderr or "")
+    """跑一条命令。失败时返回 (rc, 输出)，输出供上层做人话翻译。"""
+    LOG(f"$ {' '.join(str(c) for c in cmd)}")
+    r = subprocess.run([str(c) for c in cmd], capture_output=True, text=True)
+    return r.returncode, (r.stderr or r.stdout)
+
+
+# 全流程日志，失败时整体打印，方便定位是哪一步炸的
+_LOG = io.StringIO()
+LOG = lambda s: _LOG.write(s + "\n")
+
+
+def compile_source(src, lang, out_o, workdir):
+    """C / ObjC / ObjC++ → .o。iSH 内全自动，无需设备端参与。
+
+    关键点：
+      * -isysroot 指向完整 SDK，UIKit/Foundation 的头文件与 tbd 都在里面
+      * -F <sdk>/System/Library/PrivateFrameworks 让 SubFrameworks 解析成功
+        （缺这个会报 fatal error: could not build module 'UIKit'）
+      * -fembed-bitcode 与设备端 Swift 产物保持一致，ld64 才不会拒收
+    """
+    tools = load_registry()
+    sdk = find_sdk_root(tools)
+    if not sdk:
+        say("SDK 未安装，无法编译", "err")
+        say("先执行: sh engine/tc.sh install sdk", "info")
+        return False
+
+    xl = CLANG_XLANG[lang]
+    cmd = ["clang", f"-x{xl}",
+           "-target", "arm64e-apple-ios15.0",
+           "-isysroot", sdk,
+           "-F", os.path.join(sdk, "System/Library/PrivateFrameworks"),
+           "-F", os.path.join(sdk, "System/Library/SubFrameworks"),
+           "-F", os.path.join(sdk, "System/Library/Frameworks"),
+           "-fembed-bitcode", "-fobjc-arc", "-O2",
+           "-c", src, "-o", out_o]
+
+    rc, out = run(cmd)
+    if rc != 0:
+        say(f"{lang} 编译失败：", "err")
+        print(out[-3000:])
+        return False
+    if out.strip():
+        LOG(out[-2000:])
+    return True
 
 
 def nm_has_symbol(binary, symbol):
@@ -120,13 +251,24 @@ def build(src, name, bundle_id, outdir):
     os.makedirs(work, exist_ok=True)
 
     # ---------- 1. 编译 / 直通 ----------
-    ext = os.path.splitext(src)[1].lower()
-    if ext in (".o", ".obj"):
+    lang, err = detect_lang(src)
+    if err:
+        say(err, "err")
+        return 2
+
+    if lang == "object":
         # 已经是目标文件（设备端 CoreCompiler 产物），直接进入链接
         say(f"[1/5] 目标文件直通 {os.path.basename(src)}", "step")
         obj = src
         say(f"      {os.path.getsize(obj)} 字节", "ok")
-    elif ext == ".swift":
+    elif lang in ("c", "objc", "objcpp"):
+        # C / ObjC / ObjC++ —— iSH 内全自动，无需设备端参与
+        say(f"[1/5] 编译 {lang} 源码 {os.path.basename(src)}", "step")
+        obj = os.path.join(work, "main.o")
+        if not compile_source(src, lang, obj, work):
+            return 3
+        say(f"      产物 {os.path.getsize(obj)} 字节", "ok")
+    elif lang == "swift":
         # 先静态检查：拦截会导致闪退/黑屏的代码（NO_UI_ENTRY 等）
         lint = os.path.join(ROOT, "engine", "lint.swift")
         if os.path.exists(lint):
@@ -159,7 +301,7 @@ def build(src, name, bundle_id, outdir):
             return 3
         say(f"      产物 {os.path.getsize(obj)} 字节", "ok")
     else:
-        say(f"不支持的输入类型：{ext}（支持 .o / .swift）", "err")
+        say(f"暂不支持的输入类型：{lang}", "err")
         return 2
 
     # ---------- 2. 链接 ----------
@@ -270,8 +412,18 @@ def check():
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Swift → tipa 构建流水线")
-    ap.add_argument("source", nargs="?", help="Swift 源文件")
+    ap = argparse.ArgumentParser(
+        description="Swift / C / ObjC / ObjC++ → tipa 构建流水线",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+示例:
+  python3 build.py app.c            C —— iSH 内全自动一键出 tipa
+  python3 build.py app.mm           ObjC++
+  python3 build.py main.swift       Swift —— 需先在设备端编出 .o
+  python3 build.py main.o           目标文件直通链接
+""")
+    ap.add_argument("source", nargs="?",
+                    help="源文件（.c/.m/.mm/.swift）或目标文件（.o）")
     ap.add_argument("--name", default="App", help="app 名（默认 App）")
     ap.add_argument("--bundle-id", default=None, help="bundle id")
     ap.add_argument("--out", default=None, help="输出目录")
