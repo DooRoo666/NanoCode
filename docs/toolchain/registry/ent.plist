@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 平台应用：TrollStore 安装的自签应用必备，绕过系统对签名的信任校验 -->
+	<key>platform-application</key>
+	<true/>
+
+	<!-- 沙盒与权限宽松化：允许访问容器外文件、允许调试附加 -->
+	<key>com.apple.private.security.no-container</key>
+	<true/>
+	<key>com.apple.private.security.container-required</key>
+	<false/>
+	<key>get-task-allow</key>
+	<true/>
+
+	<!-- 允许应用内使用 JIT / 可执行内存（调试与部分框架需要） -->
+	<key>dynamic-codesigning</key>
+	<true/>
+
+	<!-- 后台执行与网络 -->
+	<key>com.apple.security.application-groups</key>
+	<array/>
+	<key>com.apple.private.network.socket-delegate</key>
+	<true/>
+
+	<!-- 文件系统读写：访问共享目录与媒体库 -->
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+	<key>com.apple.private.media-library.read-write</key>
+	<true/>
+
+	<!-- 进程信息与系统查询（诊断类 app 常用） -->
+	<key>com.apple.private.sysdiagnose</key>
+	<true/>
+</dict>
+</plist>
