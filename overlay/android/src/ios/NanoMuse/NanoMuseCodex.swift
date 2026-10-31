@@ -962,12 +962,15 @@ public enum NanoMuseCodex {
             }
 
             var result = await runOnce(args)
-            // 网关只支持 chat 而不支持 responses（或反过来）时，换一种 wire_api 再试一次
-            if result.exitCode != 0, Self.looksLikeWireMismatch(result.output) {
-                let other = NanoMuseCodexSettings.wireAPI == "responses" ? "chat" : "responses"
+            // 网关只支持 chat 而不支持 responses 时，换 wire_api 再试一次。
+            // 注意方向：codex v0.16x 起已彻底移除 chat，只能从 chat 升到 responses，
+            // 绝不能从 responses 降到 chat（降下去必然更失败，且会把 chat 持久化死锁）。
+            if result.exitCode != 0, Self.looksLikeWireMismatch(result.output),
+               NanoMuseCodexSettings.wireAPI != "responses" {
                 var retryArgs = args
                 if let index = retryArgs.firstIndex(where: { $0.contains("wire_api=") }) {
-                    retryArgs[index] = "model_providers.nanomuse.wire_api=\"\(other)\""
+                    retryArgs[index] = "model_providers.nanomuse.wire_api=\"responses\""
+                    NanoMuseCodexSettings.wireAPI = "responses"
                     result = await runOnce(retryArgs)
                 }
             }

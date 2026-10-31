@@ -177,7 +177,7 @@ enum NanoMuseSDKDownloader {
                 }
                 try? fm.removeItem(at: tmp)
 
-                guard result.files > 0 else {
+                guard result > 0 else {
                     deliver(.failure(NSError(
                         domain: "NanoMuseSDK", code: -6,
                         userInfo: [NSLocalizedDescriptionKey: "SDK 解包后为空"])))
@@ -204,7 +204,7 @@ enum NanoMuseSDKDownloader {
                 configuration.timeoutIntervalForResource = 60 * 60
                 return configuration
             }
-            let observer = DownloadProgressObserver(task: task) { p in
+            let observer = NanoMuseTaskProgressMonitor(task: task) { p in
                 DispatchQueue.main.async { progress(p) }
             }
             task.resume()

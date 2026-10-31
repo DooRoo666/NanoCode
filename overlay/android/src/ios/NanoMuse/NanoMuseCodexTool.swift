@@ -89,8 +89,12 @@ enum NanoMuseCodexSettings {
 
     /// codex 的 wire_api：第三方网关多数是 `chat`，官方与部分网关是 `responses`
     static var wireAPI: String {
-        get { UserDefaults.standard.string(forKey: Key.wireAPI) ?? "responses" }
-        set { UserDefaults.standard.set(newValue, forKey: Key.wireAPI) }
+        get {
+            // codex v0.16x 起不再支持 chat，历史残留值一律提升到 responses
+            UserDefaults.standard.set("responses", forKey: Key.wireAPI)
+            return "responses"
+        }
+        set { UserDefaults.standard.set("responses", forKey: Key.wireAPI) }
     }
 
     static var current: Values {
@@ -114,8 +118,15 @@ enum NanoMuseCodexSettings {
     /// 思考强度：codex 的 `model_reasoning_effort`，可选 minimal/low/medium/high/max。
     /// 作为子代理时用它控制"想多久"——越简单越快，复杂重构才开 high 以上。
     static var reasoningEffort: String {
-        get { UserDefaults.standard.string(forKey: "nanocodex.reasoningEffort") ?? "medium" }
-        set { UserDefaults.standard.set(newValue, forKey: "nanocodex.reasoningEffort") }
+        get {
+            let raw = UserDefaults.standard.string(forKey: "nanocodex.reasoningEffort") ?? "medium"
+            // 归一化：脏值/历史值不在档位表里时回落到 medium，避免 Picker 选中后弹回
+            return reasoningEfforts.contains(raw) ? raw : "medium"
+        }
+        set {
+            let value = reasoningEfforts.contains(newValue) ? newValue : "medium"
+            UserDefaults.standard.set(value, forKey: "nanocodex.reasoningEffort")
+        }
     }
 
     static let reasoningEfforts = ["minimal", "low", "medium", "high", "max"]
@@ -138,12 +149,17 @@ enum NanoMuseCodexSettings {
         set { UserDefaults.standard.set(newValue, forKey: "nanocodex.fallbackPrompt") }
     }
 
-    static func save(source: NanoMuseCodexSource, apiKey: String, baseURL: String, model: String) {
+    static func save(source: NanoMuseCodexSource, apiKey: String, baseURL: String, model: String,
+                     effort: String? = nil) {
         let defaults = UserDefaults.standard
         defaults.set(source.rawValue, forKey: Key.source)
         NanoMuseCodexKeychain.save(apiKey)
         defaults.set(baseURL, forKey: Key.baseURL)
         defaults.set(model, forKey: Key.model)
+        // 思考强度必须一并落盘，否则重进页面会被 @State 用旧值覆盖（表现为选完跳回）
+        if let effort, !effort.isEmpty {
+            defaults.set(effort, forKey: "nanocodex.reasoningEffort")
+        }
     }
 
     /// 真正拿去请求的地址与密钥：

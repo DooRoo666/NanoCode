@@ -155,7 +155,7 @@ final class NanoMuseZip {
         var result: [Entry] = []
         result.reserveCapacity(totalEntries)
 
-        var p = 0
+        var p: Int = 0  // 显式 Int：下面与 readU32/readU16 的 UInt64 偏移混用
         for _ in 0..<totalEntries {
             guard p + 46 <= cd.count else { break }
             guard Self.readU32(cd, p) == 0x0201_4b50 else { break }  // 中央目录签名

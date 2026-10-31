@@ -123,15 +123,52 @@ enum NanoMuseCodexModels {
         let store = ProviderConfigStore.shared
         let cloudID = NanoMuseCloud.instance?.id
 
-        guard let inst = store.instances.first(where: { instance in
+        let usable: (ProviderInstance) -> Bool = { instance in
             instance.isEnabled && instance.hasAnyCredential && instance.id != cloudID
-        }) else { return nil }
+        }
+
+        // 优先对齐「当前对话实际在用的 agent loop 模型」，而不是盲取第一个 provider。
+        // 否则用户切了对话模型，Codex 还停在旧的 provider 上（典型表现：取自 Own 而不是 Go）。
+        var inst: ProviderInstance?
+        if let entry = currentAgentLoopEntry(),
+           let match = resolveEntry(entry, in: store.instances, cloudID: cloudID),
+           usable(match) {
+            inst = match
+        }
+        if inst == nil {
+            inst = store.instances.first(where: usable)
+        }
+        guard let inst else { return nil }
 
         let key = ProviderKeychainHelper.loadAPIKey(instanceId: inst.id) ?? ""
         let base = inst.effectiveCustomBaseURL ?? fallbackBase(for: inst)
         guard !base.isEmpty else { return nil }
 
         return Inherited(label: inst.label, baseURL: base, apiKey: key)
+    }
+
+    /// 读取 nanoMuse 当前 agent loop 的首选项（形如 `<providerID>/<model>`）。
+    @MainActor
+    private static func currentAgentLoopEntry() -> String? {
+        let defaults = UserDefaults.standard
+        guard let raw = defaults.string(forKey: "defaults.agentLoopEntries"),
+              let data = raw.data(using: .utf8),
+              let list = (try? JSONSerialization.jsonObject(with: data)) as? [String],
+              let first = list.first, !first.isEmpty else { return nil }
+        return first
+    }
+
+    /// 把 `<providerID>/<model>` 解析成实例；也兼容 `<模型名>` 这种只给模型的写法。
+    @MainActor
+    private static func resolveEntry(_ entry: String, in instances: [ProviderInstance],
+                                     cloudID: String?) -> ProviderInstance? {
+        if let slash = entry.firstIndex(of: "/") {
+            let id = String(entry[entry.startIndex..<slash])
+            if !id.isEmpty, let hit = instances.first(where: { $0.id == id && $0.id != cloudID }) {
+                return hit
+            }
+        }
+        return nil
     }
 
     /// 少数内置 provider 没设自定义地址时，给一个已知默认值（只覆盖 OpenAI 兼容这一类）。

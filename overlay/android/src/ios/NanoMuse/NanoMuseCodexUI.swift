@@ -1001,7 +1001,8 @@ struct NanoMuseCodexView: View {
     // MARK: - 动作
 
     private func persist() {
-        NanoMuseCodexSettings.save(source: source, apiKey: apiKey, baseURL: baseURL, model: selectedModel)
+        NanoMuseCodexSettings.save(source: source, apiKey: apiKey, baseURL: baseURL,
+                                   model: selectedModel, effort: effort)
     }
 
     private var displayLines: [String] {

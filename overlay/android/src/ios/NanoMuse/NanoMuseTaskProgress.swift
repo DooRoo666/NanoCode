@@ -8,7 +8,7 @@ import Foundation
 ///
 /// 进度来源是 `task.countOfBytesExpectedToReceive`。
 /// 服务端不返回 Content-Length 时该值为 -1，此时退化为「无进度」。
-final class DownloadProgressObserver {
+final class NanoMuseTaskProgressMonitor {
 
     private let task: URLSessionTask
     private let handler: (Double) -> Void
