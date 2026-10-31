@@ -99,6 +99,8 @@ static void CCDriverInit(CFTypeRef cf)
     new (&driverRef->swiftDriver) std::unique_ptr<swift::driver::Driver>();
     new (&driverRef->swiftCompilation) std::unique_ptr<swift::driver::Compilation>();
     new (&driverRef->swiftToolChain) std::unique_ptr<swift::driver::ToolChain>();
+    new (&driverRef->argStorage) llvm::SmallVector<std::string, 64>();
+    new (&driverRef->argPtr) llvm::SmallVector<const char *, 64>();
     driverRef->outputPathCallbackContext = nullptr;
     driverRef->callback = nullptr;
 }
@@ -112,6 +114,8 @@ static void CCDriverFinalize(CFTypeRef cf)
         std::destroy_at(&driverRef->swiftToolChain);
         std::destroy_at(&driverRef->swiftDriver);
         std::destroy_at(&driverRef->swiftDiagnosticEngine);
+        std::destroy_at(&driverRef->swiftPrintingDiagnosticConsumer);
+        std::destroy_at(&driverRef->swiftSourceManager);
     }
     else if(driverRef->type == kCCDriverTypeClang)
     {
@@ -154,7 +158,7 @@ CCDriverRef CCDriverCreate(CFAllocatorRef allocator,
 {
     assert(arguments != nullptr);
     
-    CCDriverRef driverRef = (CCDriverRef)_CFRuntimeCreateInstance(allocator, CCDriverGetTypeID(), sizeof(struct __CCDriver) + sizeof(CFRuntimeBase), NULL);
+    CCDriverRef driverRef = (CCDriverRef)_CFRuntimeCreateInstance(allocator, CCDriverGetTypeID(), sizeof(struct __CCDriver) - sizeof(CFRuntimeBase), NULL);
     if(!driverRef)
     {
         return nullptr;
@@ -173,7 +177,6 @@ CCDriverRef CCDriverCreate(CFAllocatorRef allocator,
         driverRef->argStorage.insert(driverRef->argStorage.begin(), "swiftc");
     }
     
-    new (&driverRef->argPtr) llvm::SmallVector<const char *, 64>();
     for(const std::string &arg : driverRef->argStorage)
     {
         driverRef->argPtr.push_back(arg.c_str());
