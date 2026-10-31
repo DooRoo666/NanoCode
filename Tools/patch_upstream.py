@@ -141,6 +141,20 @@ TIPA_DISPATCH_INSERT = '''        case "tipa_build":
 
 '''
 
+# Swift 源码 → .tipa：编译 / 链接 / 组装 / 签名 / 打包全部在宿主 App 进程内完成。
+SWIFT_TIPA_DEFS_INSERT = "            NanoMuseSwiftTipaTool.definition,\n"
+
+SWIFT_TIPA_DISPATCH_INSERT = '''        case "swift_tipa":
+            let stSource = (toolArgs["source"] as? String) ?? ""
+            let stName = toolArgs["name"] as? String
+            let stBundle = toolArgs["bundle_id"] as? String
+            let stOutput = toolArgs["output"] as? String
+            let stOutcome = await NanoMuseSwiftTipaTool.execute(source: stSource, name: stName, bundleID: stBundle, output: stOutput)
+            toolOutput = stOutcome.text
+            toolSuccess = stOutcome.exitCode == 0
+
+'''
+
 HOST_FS_DISPATCH_INSERT = '''        case "host_fs":
             let fsOp = (toolArgs["op"] as? String) ?? "list"
             let fsPath = (toolArgs["path"] as? String) ?? ""
@@ -236,6 +250,10 @@ def patch_codex(root: pathlib.Path, check_only: bool) -> int:
          TIPA_DEFS_INSERT, "tool definition (tipa_build)", False),
         (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "tipa_build":',
          TIPA_DISPATCH_INSERT, "tool dispatch (tipa_build)", True),
+        (TOOL_DEFS_FILE, TOOL_DEFS_ANCHOR, "NanoMuseSwiftTipaTool.definition",
+         SWIFT_TIPA_DEFS_INSERT, "tool definition (swift_tipa)", False),
+        (TOOL_DISPATCH_FILE, TOOL_DISPATCH_ANCHOR, 'case "swift_tipa":',
+         SWIFT_TIPA_DISPATCH_INSERT, "tool dispatch (swift_tipa)", True),
         (SETTINGS_FILE, SETTINGS_ANCHOR, "codexCard",
          SETTINGS_INSERT, "settings card (Codex)", False),
         (MERMAID_FILE, MERMAID_ANCHOR, "NanoMuseMermaidAttachment.makeView",

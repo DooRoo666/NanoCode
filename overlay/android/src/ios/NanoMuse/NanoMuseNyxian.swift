@@ -612,19 +612,63 @@ enum NanoMuseNyxian {
     }
 
     /// 把 .o 链接成可执行文件（Swift 需要拉 swiftCore 等 tbd）
-    static func swiftLink(loaded: Loaded, obj: URL, bin: URL, sdk: String, res: String, work: URL) -> String {
+    ///
+    /// - Parameters:
+    ///   - target: 目标三元组。默认保留原来的 `arm64-apple-ios16.0`，调用方可传
+    ///     `arm64e-apple-ios26.5` 产出设备原生 arm64e 可执行文件。
+    ///   - isolated: true 时走 `isoRun`（自检用，编译器崩溃不会带崩宿主）；
+    ///     工具链需要在宿主进程内直接编译时传 false。
+    ///   - frameworks: 链接时额外 `-framework` 的名称（GUI app 需要 UIKit / Foundation）。
+    ///   - progress: 每次尝试前的日志回调，让工具层能实时回显。
+    static func swiftLink(loaded: Loaded,
+                          obj: URL,
+                          bin: URL,
+                          sdk: String,
+                          res: String,
+                          work: URL,
+                          target: String = "arm64-apple-ios16.0",
+                          isolated: Bool = true,
+                          frameworks: [String] = [],
+                          progress: ((String) -> Void)? = nil) -> String {
         let fm = FileManager.default
         let lib = sdk + "/usr/lib/swift"
         let fw = sdk + "/System/Library/Frameworks"
+        let frameworkArgs = frameworks.flatMap { ["-framework", $0] }
+        let resLib = res + "/swift/iphoneos"
+        let objectArgs = [obj.path]
         var out: [String] = []
-        let sets: [[String]] = [
-            ["-sdk", sdk, "-target", "arm64-apple-ios16.0", "-L", lib, "-F", fw, "-o", bin.path, obj.path],
-            ["-sdk", sdk, "-target", "arm64-apple-ios16.0", "-L", lib, "-L", res + "/swift/iphoneos", "-F", fw, "-o", bin.path, obj.path],
-            ["-sdk", sdk, "-target", "arm64-apple-ios16.0", "-L", lib, "-F", fw, "-lswiftCore", "-o", bin.path, obj.path],
-        ]
+        // 自检仍走原来的三组参数，避免改变既有行为；带 target / framework 的
+        // 调用（如 swift_tipa）则优先尝试完整 GUI 链接组合。
+        let legacy = target == "arm64-apple-ios16.0" && frameworks.isEmpty
+        let sets: [[String]]
+        if legacy {
+            sets = [
+                ["-sdk", sdk, "-target", target, "-L", lib, "-F", fw, "-o", bin.path] + objectArgs,
+                ["-sdk", sdk, "-target", target, "-L", lib, "-L", resLib, "-F", fw, "-o", bin.path] + objectArgs,
+                ["-sdk", sdk, "-target", target, "-L", lib, "-F", fw, "-lswiftCore", "-o", bin.path] + objectArgs,
+            ]
+        } else {
+            sets = [
+                ["-sdk", sdk, "-target", target, "-L", lib, "-L", resLib, "-F", fw]
+                    + frameworkArgs
+                    + ["-lswiftCore", "-lswiftFoundation", "-o", bin.path] + objectArgs,
+                ["-sdk", sdk, "-target", target, "-L", lib, "-L", resLib, "-F", fw]
+                    + frameworkArgs
+                    + ["-o", bin.path] + objectArgs,
+                ["-sdk", sdk, "-target", target, "-L", lib, "-L", resLib, "-F", fw]
+                    + frameworkArgs
+                    + ["-lswiftCore", "-o", bin.path] + objectArgs,
+                ["-sdk", sdk, "-target", target, "-L", lib, "-F", fw]
+                    + frameworkArgs
+                    + ["-lswiftCore", "-lswiftFoundation", "-o", bin.path] + objectArgs,
+            ]
+        }
         for (i, args) in sets.enumerated() {
             try? fm.removeItem(at: bin)
-            let r = isoRun(loaded: loaded, args: args, swift: true, work: work)
+            progress?("[链接尝试 \(i + 1)/\(sets.count)] " + args.joined(separator: " "))
+            let r = isolated
+                ? isoRun(loaded: loaded, args: args, swift: true, work: work)
+                : loaded.run(args, swift: true)
             let size = ((try? fm.attributesOfItem(atPath: bin.path))?[.size] as? NSNumber)?.intValue ?? 0
             out.append("[(\(i + 1))] ok=\(r.ok) bin=\(size)B")
             if size > 0 {

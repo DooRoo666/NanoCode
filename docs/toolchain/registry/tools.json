@@ -96,6 +96,28 @@
       "probe": {
         "file": "Shared/swift/module.modulemap"
       }
+    },
+    "swift_tipa": {
+      "label": "Swift 源码 → TIPA",
+      "kind": "builtin",
+      "required": false,
+      "description": "宿主进程内把 Swift 源码编译、链接、签名并打包成 .tipa（arm64e，不 fork、不走 iSH）",
+      "implementation": {
+        "swift": "overlay/android/src/ios/NanoMuse/NanoMuseSwiftTipaTool.swift",
+        "tool_name": "swift_tipa",
+        "entry": "NanoMuseSwiftTipaTool.execute(source:name:bundleID:output:)"
+      },
+      "depends_on": [
+        "corecompiler",
+        "sdk",
+        "swiftrt"
+      ],
+      "source": {
+        "compiler": "NanoMuseNyxian.load() / Loaded.run(args, swift: true)",
+        "linker": "NanoMuseNyxian.swiftLink(...)",
+        "signer": "NanoMuseMachSigner.sign(path:entitlements:identifier:), fallback codex-sign",
+        "packager": "NanoMuseTipaBuilder.build(appPath:entitlements:outputName:)"
+      }
     }
   }
 }
