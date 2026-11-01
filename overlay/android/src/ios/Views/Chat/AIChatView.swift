@@ -2435,6 +2435,13 @@ struct AIChatView: View {
     }
 
     @ViewBuilder
+    // nanoMuse-ui: sheet height follows the number of level rows so the
+    // popup never shows dead space (or clips the last row).
+    private var thinkingSheetHeight: CGFloat {
+        let rows = CGFloat(max(1, vm.availableThinkingLevels.count) + 1)
+        return min(520, 70 + rows * 50)
+    }
+
     private var thinkingLevelBadge: some View {
         let level = vm.currentThinkingLevel
         // Sits on nav-bar row 2 (the 9pt "provider · model" line). Kept a
@@ -2472,8 +2479,9 @@ struct AIChatView: View {
                     showThinkingLevelSheet = false
                 }
             )
-            .presentationDetents([.height(240), .medium])
+            .presentationDetents([.height(thinkingSheetHeight)])
             .presentationDragIndicator(.visible)
+            .presentationCornerRadius(24)
         }
     }
 
