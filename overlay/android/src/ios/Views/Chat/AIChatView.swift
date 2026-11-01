@@ -233,6 +233,7 @@ struct AIChatView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var inputFocused: Bool = false // nanoMuse:
     @State private var nmShowEffortMenu: Bool = false // nanoMuse:
+    @State private var nmShowModelMenu: Bool = false // nanoMuse:
     @State private var inputHasSelection: Bool = false
     @State private var inputIsScrollable: Bool = false
     /// [T-ios-composer-swipe-send-at-bottom] True when the composer's text is
@@ -974,7 +975,15 @@ struct AIChatView: View {
                 vm.browserTakeoverActive = true
             })
         }
-        .sheet(isPresented: $showModelPicker) {
+        .sheet(isPresented: $showModelPicker, onDismiss: {
+            // The picker can bind the model to a session id it creates itself
+            // (draft chat → ensureSessionId), so the notification may arrive
+            // while `vm.sessionId` is still nil and get dropped. Re-reading on
+            // dismiss guarantees the nav-title pill shows the model the user
+            // actually picked instead of the stale default.
+            modelBindingRevision &+= 1
+            refreshTitlePillSession()
+        }) {
             NavigationStack {
                 SessionModelPicker(sessionId: vm.sessionId) {
                     await vm.ensureSessionReturningId()
@@ -1316,8 +1325,15 @@ struct AIChatView: View {
         .onReceive(NotificationCenter.default.publisher(for: .sessionModelBindingChanged)) { note in
             let updatedId = (note.object as? String)
                 ?? (note.userInfo?["sessionId"] as? String)
-            guard let sid = vm.sessionId,
-                  updatedId == nil || updatedId == sid else { return }
+            guard let sid = vm.sessionId else {
+                // Draft chat: the binding was written for a session id this
+                // view has not picked up yet. Refresh anyway so the pill and
+                // title reflect the new selection as soon as the id lands.
+                modelBindingRevision &+= 1
+                refreshTitlePillSession()
+                return
+            }
+            guard updatedId == nil || updatedId == sid else { return }
             modelBindingRevision &+= 1
             refreshTitlePillSession()
         }
@@ -2434,13 +2450,6 @@ struct AIChatView: View {
         .animation(.easeInOut(duration: 0.15), value: titleIsVisuallyLocked)
     }
 
-    // nanoMuse-ui: sheet height follows the number of level rows so the
-    // popup never shows dead space (or clips the last row).
-    private var thinkingSheetHeight: CGFloat {
-        let rows = CGFloat(max(1, vm.availableThinkingLevels.count) + 1)
-        return min(520, 70 + rows * 50)
-    }
-
     @ViewBuilder
     private var thinkingLevelBadge: some View {
         let level = vm.currentThinkingLevel
@@ -2479,7 +2488,7 @@ struct AIChatView: View {
                     showThinkingLevelSheet = false
                 }
             )
-            .presentationDetents([.height(thinkingSheetHeight)])
+            .presentationDetents([.height(240), .medium])
             .presentationDragIndicator(.visible)
         }
     }
@@ -3661,7 +3670,7 @@ struct AIChatView: View {
     @ViewBuilder
     private var nmComposerModelChips: some View { // nanoMuse:
         HStack(spacing: 6) { // nanoMuse:
-            Button { showModelPicker = true } label: { // nanoMuse:
+            Button { nmShowModelMenu.toggle() } label: { // nanoMuse:
                 HStack(spacing: 3) { // nanoMuse:
                     Image(systemName: "cpu") // nanoMuse:
                         .font(.system(size: 10, weight: .medium)) // nanoMuse:
@@ -3677,6 +3686,9 @@ struct AIChatView: View {
                 .background(Capsule().fill(Color.secondary.opacity(0.12))) // nanoMuse:
             } // nanoMuse:
             .buttonStyle(.plain) // nanoMuse:
+            .popover(isPresented: $nmShowModelMenu, arrowEdge: .bottom) { // nanoMuse:
+                nmModelMenuContent.nmCompactPopover() // nanoMuse:
+            } // nanoMuse:
 
             Button { nmShowEffortMenu.toggle() } label: { // nanoMuse:
                 HStack(spacing: 3) { // nanoMuse:
@@ -3694,7 +3706,7 @@ struct AIChatView: View {
             } // nanoMuse:
             .buttonStyle(.plain) // nanoMuse:
             .popover(isPresented: $nmShowEffortMenu, arrowEdge: .bottom) { // nanoMuse:
-                nmEffortMenuContent // nanoMuse:
+                nmEffortMenuContent.nmCompactPopover() // nanoMuse:
             } // nanoMuse:
             Spacer(minLength: 0) // nanoMuse:
         } // nanoMuse:
@@ -3704,8 +3716,35 @@ struct AIChatView: View {
 
     // nanoMuse: 当前会话模型的显示名。
     private var nmActiveModelLabel: String { // nanoMuse:
+        if let id = nmCurrentEntryId, let entry = configStore.entry(for: id) { // nanoMuse:
+            let name = entry.model.displayName // nanoMuse:
+            if !name.isEmpty { return name } // nanoMuse:
+        } // nanoMuse:
+        if let gid = nmCurrentGroupId, let group = configStore.group(for: gid) { // nanoMuse:
+            return group.name // nanoMuse:
+        } // nanoMuse:
         let name = vm.selectedModel.displayName // nanoMuse:
         return name.isEmpty ? AppLocalized("Model") : name // nanoMuse:
+    } // nanoMuse:
+
+    /// 当前会话（或草稿）实际使用的条目 id —— 药丸和弹窗勾选都靠它。 // nanoMuse:
+    private var nmCurrentEntryId: String? { // nanoMuse:
+        if let sid = vm.sessionId, let binding = configStore.binding(for: sid) { // nanoMuse:
+            switch binding.primarySource { // nanoMuse:
+            case .directEntry(let id, _): return id // nanoMuse:
+            case .group(_, let resolved): return resolved // nanoMuse:
+            } // nanoMuse:
+        } // nanoMuse:
+        if let gid = vm.initialGroupId, let group = configStore.group(for: gid) { // nanoMuse:
+            return group.memberEntryIds.first // nanoMuse:
+        } // nanoMuse:
+        return nil // nanoMuse:
+    } // nanoMuse:
+
+    private var nmCurrentGroupId: String? { // nanoMuse:
+        guard let sid = vm.sessionId, let binding = configStore.binding(for: sid) else { return nil } // nanoMuse:
+        if case .group(let gid, _) = binding.primarySource { return gid } // nanoMuse:
+        return nil // nanoMuse:
     } // nanoMuse:
 
     // nanoMuse: 当前档位的本地化标签。
@@ -3745,6 +3784,143 @@ struct AIChatView: View {
         // nanoMuse: 不设 .presentationCompactAdaptation(.popover) ——
         // 该 API 需要 iOS 16.4+，而工程部署目标是 16.0/16.2，会直接编译失败。
         // 缺省行为在 iPhone 上就是 sheet，视觉一致；仅 iPad compact 下呈现略有差异。
+    } // nanoMuse:
+
+    // nanoMuse: 点模型药丸 → 就地弹出列表（分组在前、具体模型在后），点一下立刻生效。
+    @ViewBuilder
+    private var nmModelMenuContent: some View { // nanoMuse:
+        let groups = configStore.modelGroups // nanoMuse:
+        let entries = configStore.modelEntries.filter { !$0.isHidden } // nanoMuse:
+        let currentEntry = nmCurrentEntryId // nanoMuse:
+        let currentGroup = nmCurrentGroupId // nanoMuse:
+        ScrollView { // nanoMuse:
+            VStack(alignment: .leading, spacing: 2) { // nanoMuse:
+                if !groups.isEmpty { // nanoMuse:
+                    nmMenuSectionTitle(AppLocalized("Model Group")) // nanoMuse:
+                    ForEach(groups) { group in // nanoMuse:
+                        nmMenuRow(title: group.name, // nanoMuse:
+                                  subtitle: group.defaultThinkingLevel.map { level in // nanoMuse:
+                                      AppLocalized("Default") + "·" + level.displayName // nanoMuse:
+                                  }, // nanoMuse:
+                                  selected: currentGroup == group.id) { // nanoMuse:
+                            nmPick(group: group) // nanoMuse:
+                        } // nanoMuse:
+                    } // nanoMuse:
+                } // nanoMuse:
+                if !entries.isEmpty { // nanoMuse:
+                    nmMenuSectionTitle(AppLocalized("Models")) // nanoMuse:
+                    ForEach(entries) { entry in // nanoMuse:
+                        nmMenuRow(title: entry.model.displayName, // nanoMuse:
+                                  subtitle: nil, // nanoMuse:
+                                  selected: currentGroup == nil && currentEntry == entry.id) { // nanoMuse:
+                            nmPick(entry: entry) // nanoMuse:
+                        } // nanoMuse:
+                    } // nanoMuse:
+                } // nanoMuse:
+                if groups.isEmpty && entries.isEmpty { // nanoMuse:
+                    Text(AppLocalized("No models configured")) // nanoMuse:
+                        .font(.footnote) // nanoMuse:
+                        .foregroundStyle(.secondary) // nanoMuse:
+                        .padding(.vertical, 10) // nanoMuse:
+                } // nanoMuse:
+            } // nanoMuse:
+            .padding(.horizontal, 12) // nanoMuse:
+            .padding(.vertical, 8) // nanoMuse:
+            .frame(maxWidth: .infinity, alignment: .leading) // nanoMuse:
+        } // nanoMuse:
+        .frame(width: 250) // nanoMuse:
+        .frame(maxHeight: 400) // nanoMuse:
+    } // nanoMuse:
+
+    private func nmMenuSectionTitle(_ title: String) -> some View { // nanoMuse:
+        Text(title.uppercased()) // nanoMuse:
+            .font(.caption2.weight(.semibold)) // nanoMuse:
+            .foregroundStyle(.secondary) // nanoMuse:
+            .frame(maxWidth: .infinity, alignment: .leading) // nanoMuse:
+            .padding(.top, 8) // nanoMuse:
+            .padding(.bottom, 2) // nanoMuse:
+    } // nanoMuse:
+
+    private func nmMenuRow(title: String, // nanoMuse:
+                           subtitle: String?, // nanoMuse:
+                           selected: Bool, // nanoMuse:
+                           action: @escaping () -> Void) -> some View { // nanoMuse:
+        Button(action: action) { // nanoMuse:
+            HStack(spacing: 6) { // nanoMuse:
+                VStack(alignment: .leading, spacing: 1) { // nanoMuse:
+                    Text(title) // nanoMuse:
+                        .font(.footnote) // nanoMuse:
+                        .foregroundStyle(Color.primary) // nanoMuse:
+                        .lineLimit(1) // nanoMuse:
+                    if let subtitle { // nanoMuse:
+                        Text(subtitle) // nanoMuse:
+                            .font(.caption2) // nanoMuse:
+                            .foregroundStyle(.secondary) // nanoMuse:
+                            .lineLimit(1) // nanoMuse:
+                    } // nanoMuse:
+                } // nanoMuse:
+                Spacer(minLength: 4) // nanoMuse:
+                if selected { // nanoMuse:
+                    Image(systemName: "checkmark") // nanoMuse:
+                        .font(.caption2.weight(.bold)) // nanoMuse:
+                        .foregroundStyle(Color.accentColor) // nanoMuse:
+                } // nanoMuse:
+            } // nanoMuse:
+            .padding(.vertical, 6) // nanoMuse:
+            .padding(.horizontal, 6) // nanoMuse:
+            .frame(maxWidth: .infinity, alignment: .leading) // nanoMuse:
+            .contentShape(Rectangle()) // nanoMuse:
+        } // nanoMuse:
+        .buttonStyle(.plain) // nanoMuse:
+    } // nanoMuse:
+
+    // nanoMuse: 选了具体模型 → 直接绑到本会话（顺手关掉弹层）。
+    private func nmPick(entry: ModelEntry) { // nanoMuse:
+        guard let sid = vm.sessionId else { // nanoMuse:
+            // 草稿对话还没有 sessionId，交给整页选择器去建会话。 // nanoMuse:
+            nmShowModelMenu = false // nanoMuse:
+            showModelPicker = true // nanoMuse:
+            return // nanoMuse:
+        } // nanoMuse:
+        nmShowModelMenu = false // nanoMuse:
+        let existing = configStore.binding(for: sid) // nanoMuse:
+        configStore.setBinding(SessionModelBinding(sessionId: sid, // nanoMuse:
+                                                  primarySource: .directEntry(modelEntryId: entry.id), // nanoMuse:
+                                                  subModelSource: existing?.subModelSource), // nanoMuse:
+                               for: sid) // nanoMuse:
+        NotificationCenter.default.post(name: .sessionModelBindingChanged, // nanoMuse:
+                                        object: nil, // nanoMuse:
+                                        userInfo: ["sessionId": sid]) // nanoMuse:
+        modelBindingRevision &+= 1 // nanoMuse:
+        ChatStore.shared.updateSessionModelId(sid, modelId: entry.model.id) // nanoMuse:
+    } // nanoMuse:
+
+    // nanoMuse: 选了分组 → 交给路由算出实际模型，并套用分组默认档位。
+    private func nmPick(group: ModelGroup) { // nanoMuse:
+        guard let sid = vm.sessionId else { // nanoMuse:
+            nmShowModelMenu = false // nanoMuse:
+            showModelPicker = true // nanoMuse:
+            return // nanoMuse:
+        } // nanoMuse:
+        nmShowModelMenu = false // nanoMuse:
+        let resolved = ModelGroupRouter.resolve(group: group, sessionId: sid, store: configStore) ?? "" // nanoMuse:
+        let existing = configStore.binding(for: sid) // nanoMuse:
+        configStore.setBinding(SessionModelBinding(sessionId: sid, // nanoMuse:
+                                                  primarySource: .group(groupId: group.id, resolvedEntryId: resolved), // nanoMuse:
+                                                  subModelSource: existing?.subModelSource), // nanoMuse:
+                               for: sid) // nanoMuse:
+        if let level = group.defaultThinkingLevel { // nanoMuse:
+            var cfg = configStore.inferenceConfig(for: sid) ?? SessionInferenceConfig() // nanoMuse:
+            cfg.thinkingLevel = level // nanoMuse:
+            configStore.setInferenceConfig(cfg, for: sid) // nanoMuse:
+        } // nanoMuse:
+        NotificationCenter.default.post(name: .sessionModelBindingChanged, // nanoMuse:
+                                        object: nil, // nanoMuse:
+                                        userInfo: ["sessionId": sid, "groupId": group.id]) // nanoMuse:
+        modelBindingRevision &+= 1 // nanoMuse:
+        if let entry = configStore.entry(for: resolved) { // nanoMuse:
+            ChatStore.shared.updateSessionModelId(sid, modelId: entry.model.id) // nanoMuse:
+        } // nanoMuse:
     } // nanoMuse:
 
     // nanoMuse: the pill's mic — the same switch into voice mode as MicButton's onTap.
@@ -6638,3 +6814,22 @@ struct DownloadLocateTarget: Identifiable {
     let filename: String
     var id: String { filename }
 }
+
+// nanoMuse: iPhone 上 popover 默认被压成 sheet；能升就升成真正的气泡，
+// 老系统（< 16.4）保持系统缺省行为，不引入版本要求。
+private struct NMModelMenuPopoverModifier: ViewModifier { // nanoMuse:
+    @ViewBuilder
+    func body(content: Content) -> some View { // nanoMuse:
+        if #available(iOS 16.4, *) { // nanoMuse:
+            content.presentationCompactAdaptation(.popover) // nanoMuse:
+        } else { // nanoMuse:
+            content // nanoMuse:
+        } // nanoMuse:
+    } // nanoMuse:
+} // nanoMuse:
+
+extension View { // nanoMuse:
+    func nmCompactPopover() -> some View { // nanoMuse:
+        modifier(NMModelMenuPopoverModifier()) // nanoMuse:
+    } // nanoMuse:
+} // nanoMuse:
