@@ -143,12 +143,23 @@ def patch_flag(root):
     print("  PATCH includeHostTools 开关")
     return 1
 
+def patch_dedupe(root):
+    f = f"{root}/Agent/Chat/AIChatViewModel.swift"
+    old = '        let tools = NanoMusePromptDiet.tools(makeAgentTools()) // nanoMuse: browser_use worded densely'
+    new_code = '''        // nanoMuse-toolreg: Provider gateways require unique function names.
+        // Keep the first definition when built-in and host tool registries overlap.
+        var tools = NanoMusePromptDiet.tools(makeAgentTools()) // nanoMuse: browser_use worded densely
+        var seenToolNames = Set<String>()
+        tools = tools.filter { seenToolNames.insert($0.name).inserted }'''
+    return patch(f, old, new_code, "Provider 工具名去重")
+
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else "."
     print(f"== 接入 host_exec / codex_exec → {root} ==")
     n = 0
     n += patch_schema(root)
     n += patch_flag(root)
+    n += patch_dedupe(root)
     n += patch_switch(root)
     n += patch_sse(root)
     print(f"== 完成，改动 {n} 处 ==")
