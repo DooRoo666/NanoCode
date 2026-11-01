@@ -3721,7 +3721,9 @@ struct AIChatView: View {
         } // nanoMuse:
         .padding(.vertical, 6) // nanoMuse:
         .frame(minWidth: 160) // nanoMuse:
-        .presentationCompactAdaptation(.popover) // nanoMuse:
+        // nanoMuse: 不设 .presentationCompactAdaptation(.popover) ——
+        // 该 API 需要 iOS 16.4+，而工程部署目标是 16.0/16.2，会直接编译失败。
+        // 缺省行为在 iPhone 上就是 sheet，视觉一致；仅 iPad compact 下呈现略有差异。
     } // nanoMuse:
 
     // nanoMuse: the pill's mic — the same switch into voice mode as MicButton's onTap.
