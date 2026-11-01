@@ -98,14 +98,32 @@ jobs:
           python3 Tools/apply_overlay.py \
             --project upstream/android/src/ios/Minis.xcodeproj \
             --file upstream/android/src/ios/NanoMuse/NanoMuseCodexEngine.swift
-          # 新增的运行时下载/解包源文件也必须注册，否则不会被编译。
-          for extra in NanoMuseRuntimeInstaller.swift NanoMuseTarGz.swift NanoMuseEnvCheck.swift NanoMuseNyxian.swift NanoMuseCoreCompilerDownloader.swift; do
-            if [ -f "upstream/android/src/ios/NanoMuse/$extra" ]; then
-              python3 Tools/apply_overlay.py \
-                --project upstream/android/src/ios/Minis.xcodeproj \
-                --file "upstream/android/src/ios/NanoMuse/$extra" || true
+          # 新增的源文件必须注册进 pbxproj，否则 Xcode 不会编译它们。
+          # 早先这里只硬编码了 5 个文件名，导致 swift_tipa / tipa_build /
+          # host_exec / host_fs / codex_exec 等 30+ 个工具源文件从未被编译，
+          # 产出的包看起来正常，但工具全都不存在。改为全量扫描 overlay 目录。
+          registered=0
+          failed=0
+          for f in overlay/android/src/ios/NanoMuse/*.swift; do
+            base=$(basename "$f")
+            # CodexEngine 已在上面单独注册过，跳过避免重复。
+            if [ "$base" = "NanoMuseCodexEngine.swift" ]; then
+              continue
+            fi
+            if python3 Tools/apply_overlay.py \
+                 --project upstream/android/src/ios/Minis.xcodeproj \
+                 --file "upstream/android/src/ios/NanoMuse/$base"; then
+              registered=$((registered + 1))
+            else
+              echo "::error::failed to register $base into pbxproj"
+              failed=$((failed + 1))
             fi
           done
+          echo "registered $registered overlay sources, $failed failed"
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::overlay registration incomplete, build would ship a broken app"
+            exit 1
+          fi
           python3 Tools/patch_upstream.py --root upstream/android/src/ios
           python3 Tools/patch_info_plist.py --plist upstream/android/src/ios/Info.plist
           # Info.plist 会被 PRODUCT_BUNDLE_IDENTIFIER / INFOPLIST_KEY_* 覆盖，
