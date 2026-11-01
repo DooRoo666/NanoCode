@@ -146,6 +146,16 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           echo "found $APP"
 
+      # Runtimes/ 必须是可写的运行时根：App 首次编译要把按需下载的 CoreCompiler 落在这里。
+      # CI 产出的 bundle 默认 33:33 / 0755，真机上 mobile 用户写不进去（症状：swift_tipa
+      # 说「编译器未就位，开始下载」，装完仍然找不到）。
+      - name: Make Runtimes writable
+        run: |
+          APP="upstream/android/src/ios/${{ steps.app.outputs.path }}"
+          mkdir -p "$APP/Runtimes/frameworks"
+          chmod -R 0777 "$APP/Runtimes"
+          ls -ld "$APP/Runtimes" "$APP/Runtimes/frameworks"
+
       - name: Package TIPA (three-tier ldid signing)
         run: bash Tools/make_tipa.sh "upstream/android/src/ios/${{ steps.app.outputs.path }}" dist
 
