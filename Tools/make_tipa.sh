@@ -28,10 +28,8 @@ RUNTIME_ENT="$ROOT/Tools/entitlements-runtime.plist"
 # 主程序 Minis 仍不带 —— 它自己的进程行为保持原样，避免影响 fork。
 # 注意：早先以为 EVA 会让 fork 崩，后来实测 os.fork()/fork+exec 在 TheosRuntime 下都正常，
 # 所以 EVA 不是 SIGBUS 的原因，不该一刀切掉。
-if grep -q "<key>com.apple.developer.kernel.extended-virtual-addressing</key>" "$MAIN_ENT"; then
-  echo "error: 主程序模板里不该有 extended-virtual-addressing（只放在 runtime 模板）" >&2
-  exit 1
-fi
+# 2026-11-01: 主程序也必须带 EVA —— 宿主进程要自己 dlopen 186MB 的
+# CoreCompiler.framework，没有 48 位地址空间会直接 sandbox blocked mmap()。
 
 # 正向守卫：runtime 模板必须带 disable-library-validation。
 # 少了它的表现是 clang-16 报
