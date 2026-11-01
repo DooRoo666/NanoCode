@@ -184,9 +184,10 @@ jobs:
           echo "path=$APP" >> "$GITHUB_OUTPUT"
           echo "found $APP"
 
-      # 不内置 CoreCompiler（178 MB）：Runtimes/ 留空，App 首启动时按需
-      # 从 GitHub release 下载到 Runtimes/frameworks/。make_tipa.sh 里那段
-      # 预置逻辑是 `if [ -f Runtimes/CoreCompiler.zip ]` 条件式的，不下载即跳过。
+      # 不内置 CoreCompiler（178 MB）：Runtimes/ 留空，由用户在
+      # 设置 → 编译工具链 里自己选装（不再首启动自动下载）。
+      # make_tipa.sh 里那段预置逻辑是 `if [ -f Runtimes/CoreCompiler.zip ]`
+      # 条件式的，不预置即跳过。
 
       - name: Package TIPA (three-tier ldid signing)
         run: bash Tools/make_tipa.sh "upstream/android/src/ios/${{ steps.app.outputs.path }}" dist

@@ -177,43 +177,20 @@ enum NanoMuseSwiftTipaTool {
             sdk = detected
             log.append("      检测到外部 SDK：\(sdk.path)")
         } else {
-            log.append("      未安装，开始下载 iPhoneOS SDK（约 49MB 压缩包）…")
-            let progress = ProgressLog()
-            let result: Result<URL, Error> = await withCheckedContinuation { continuation in
-                NanoMuseSDKDownloader.ensureInstalled(progress: { ratio in
-                    // 回调可能来自任意线程；ProgressLog 自己加锁，只保留 20% 档位。
-                    progress.record(ratio)
-                }, completion: { continuation.resume(returning: $0) })
-            }
-            switch result {
-            case .success(let url):
-                sdk = url
-                log.append("      SDK 就绪：\(sdk.path)")
-            case .failure(let error):
-                log.append("ERR SDK 缺失且下载失败：\(error.localizedDescription)")
-                log.append("    可手动把 iPhoneOS26.5.sdk 放到 Documents/nyxian/ 或 Runtimes/sdks/ 后重试。")
-                return finish("", code: 1)
-            }
-            log.append(contentsOf: progress.lines())
+            // ★ 2026-11-01：不再自动下载。运行时改由用户在 设置 → 编译工具链 里自选。
+            log.append("ERR 未安装 iPhoneOS SDK")
+            log.append("    请到 设置 → 编译工具链 里勾选「iPhoneOS SDK」下载（约 49MB）。")
+            log.append("    也可手动把 iPhoneOS26.5.sdk 放到 Documents/nyxian/ 或 Runtimes/sdks/ 后重试。")
+            return finish("", code: 1)
         }
 
-        // 编译器不再内置在包里（省 178 MB），首次编译时按需从 GitHub release 下载。
+        // 编译器不再内置在包里，也**不再自动下载**：由用户在 设置 → 编译工具链 里自己选装。
         if !NanoMuseCoreCompilerDownloader.isInstalled() {
-            log.append("编译器未就位，开始下载 CoreCompiler（约 71 MB，仅首次）…")
-            let result: Result<URL, Error> = await withCheckedContinuation { cont in
-                NanoMuseCoreCompilerDownloader.ensureInstalled { pct in
-                    log.append(String(format: "  CoreCompiler 下载中 %.0f%%", pct * 100))
-                } completion: { r in
-                    cont.resume(returning: r)
-                }
-            }
-            if case .failure(let e) = result {
-                log.append("ERR CoreCompiler 下载失败：\(e.localizedDescription)")
-                log.append("提示：可稍后重试，或检查网络能否访问 github.com")
-                return finish("", code: -1)
-            }
-            log.append("CoreCompiler 就位：\(NanoMuseCoreCompilerDownloader.installedFrameworkPath.path)")
+            log.append("ERR 未安装 CoreCompiler 编译器")
+            log.append("    请到 设置 → 编译工具链 里勾选「CoreCompiler」下载（约 71MB）。")
+            return finish("", code: -1)
         }
+        log.append("CoreCompiler 就位：\(NanoMuseCoreCompilerDownloader.installedFrameworkPath.path)")
 
         guard fm.fileExists(atPath: sdk.path) else {
             log.append("ERR SDK 路径不存在：\(sdk.path)")

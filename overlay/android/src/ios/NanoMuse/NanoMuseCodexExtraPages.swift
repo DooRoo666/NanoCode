@@ -5,6 +5,11 @@ import SwiftUI
 extension NanoMuseCodexView {
     var extraCard: some View {
         NanoMuseCard {
+            NavigationLink { NanoMuseToolchainPage() } label: {
+                row(title: "编译工具链", subtitle: "iPhoneOS SDK · CoreCompiler — 自己选着下载，不自动装")
+            }
+            .buttonStyle(.plain)
+            NanoMuseRowDivider()
             NavigationLink { NanoMuseRuntimePage() } label: {
                 row(title: "运行时（原版清单）", subtitle: "codex · ollvm · node · python · 逆向工具")
             }
