@@ -91,7 +91,13 @@ jobs:
       - name: Apply overlay (Codex engine)
         run: |
           set -euo pipefail
-          cp overlay/android/src/ios/NanoMuse/*.swift upstream/android/src/ios/NanoMuse/
+          # 复制 overlay 里所有 .swift 到 upstream，保留相对目录结构。
+          # 早先只 cp NanoMuse/*.swift，Views/Chat/AIChatView.swift 从未被复制过去。
+          ( cd overlay/android/src/ios && find . -name "*.swift" -print0 ) \
+            | while IFS= read -r -d "" rel; do
+                mkdir -p "upstream/android/src/ios/$(dirname "$rel")"
+                cp "overlay/android/src/ios/$rel" "upstream/android/src/ios/$rel"
+              done
           # nanoMuse-toolreg: 把 host_exec / codex_exec 接进 agent 工具链
           # （schema 注册、switch 分支、SSE 卡片类型）。幂等，重复执行无副作用。
           python3 overlay/tools_patch.py upstream/android/src/ios
@@ -104,24 +110,27 @@ jobs:
           # 产出的包看起来正常，但工具全都不存在。改为全量扫描 overlay 目录。
           registered=0
           failed=0
-          for f in overlay/android/src/ios/NanoMuse/*.swift; do
-            base=$(basename "$f")
-            # CodexEngine 已在上面单独注册过，跳过避免重复。
-            if [ "$base" = "NanoMuseCodexEngine.swift" ]; then
-              continue
-            fi
+          ( cd overlay/android/src/ios && find . -name "*.swift" | sort ) > /tmp/overlay_list.txt
+          echo "overlay sources found: $(wc -l < /tmp/overlay_list.txt)"
+          while IFS= read -r rel; do
+            rel=${rel#./}
+            case "$rel" in
+              NanoMuse/NanoMuseCodexEngine.swift) continue ;;  # 上面已单独注册
+            esac
             if python3 Tools/apply_overlay.py \
                  --project upstream/android/src/ios/Minis.xcodeproj \
-                 --file "upstream/android/src/ios/NanoMuse/$base"; then
+                 --file "upstream/android/src/ios/$rel"; then
               registered=$((registered + 1))
             else
-              echo "::error::failed to register $base into pbxproj"
+              echo "::error::failed to register $rel into pbxproj"
               failed=$((failed + 1))
             fi
-          done
+          done < /tmp/overlay_list.txt
           echo "registered $registered overlay sources, $failed failed"
-          if [ "$failed" -ne 0 ]; then
-            echo "::error::overlay registration incomplete, build would ship a broken app"
+          # 数量必须与 overlay 实际文件数一致（CodexEngine 已单独注册，故减 1）
+          expected=$(( $(wc -l < /tmp/overlay_list.txt) - 1 ))
+          if [ "$failed" -ne 0 ] || [ "$registered" -ne "$expected" ]; then
+            echo "::error::overlay registration incomplete (registered=$registered expected=$expected); refusing to ship a broken app"
             exit 1
           fi
           python3 Tools/patch_upstream.py --root upstream/android/src/ios
