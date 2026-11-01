@@ -103,11 +103,25 @@ def patch_sse(root):
     ok += patch(f,
         '                    case "shell_execute": .shellTool(command: "")',
         '''                    case "shell_execute": .shellTool(command: "")
-                    // nanoMuse-toolreg: 宿主工具用 shellTool 卡片呈现，
-                    // 但没有 command 参数可解析，标题走工具名本身。
-                    case NanoMuseHostShellTool.toolName,
-                         NanoMuseCodexTool.toolName: .shellTool(command: "")''',
+                    // nanoMuse-toolreg: 宿主工具用 shellTool 卡片呈现。
+                    // command 填工具名而非空串 —— shellTool 卡片会把 command 当作
+                    // 标题原文显示，空串时只剩通用的 "shell"，看不出是 host 层还是
+                    // Codex 子代理。填名字后卡片直接标出 HOST / CODEX。
+                    case NanoMuseHostShellTool.toolName:
+                        .shellTool(command: "host_exec")
+                    case NanoMuseCodexTool.toolName:
+                        .shellTool(command: "codex_exec")''',
         "SSE 卡片类型")
+
+    # 2) 正文预览：toolInputPreview 已经会优先读 tool_title 作描述，但 preview
+    #    正文对这两个工具没有分支，会落到 default 显示整段 JSON。补上专属分支，
+    #    让卡片正文显示真正要执行的东西（host 的 command / codex 的 task）。
+    ok += patch(f,
+        '''        let desc = extractPartialStringValue("tool_title", from: json)''',
+        '''        // nanoMuse-toolreg: host_exec / codex_exec 没有 tool_summary 字段，
+        // tool_title 是模型给的语义摘要，直接当描述用。
+        let desc = extractPartialStringValue("tool_title", from: json)''',
+        "preview 读 tool_title")
     return ok
 
 def patch_flag(root):
