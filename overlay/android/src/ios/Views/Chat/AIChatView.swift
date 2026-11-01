@@ -452,6 +452,7 @@ struct AIChatView: View {
     @ObservedObject private var lockStore = SessionLockStore.shared
     /// Opacity for the fallback capsule highlight (animated 3× pulse on model switch).
     @State private var fallbackPulseOpacity: Double = 0
+    @State private var modelBindingRevision: Int = 0
 
     /// Snapshot of the current session's title + category, refreshed when the
     /// session updates (e.g. auto-generated title arrives). Nil until first load.
@@ -1312,6 +1313,14 @@ struct AIChatView: View {
                   updatedId == sid else { return }
             refreshTitlePillSession()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .sessionModelBindingChanged)) { note in
+            let updatedId = (note.object as? String)
+                ?? (note.userInfo?["sessionId"] as? String)
+            guard let sid = vm.sessionId,
+                  updatedId == nil || updatedId == sid else { return }
+            modelBindingRevision &+= 1
+            refreshTitlePillSession()
+        }
         .onChange(of: shareCoordinator.bufferVersion) { newVersion in
             // Warm start: user is already in a session when share arrives
             minisLogger.info("[Share] AIChatView.onChange(bufferVersion)=\(newVersion) sessionId=\(sessionId ?? "nil") draftId=\(draftId ?? "nil") hasBuffer=\(shareCoordinator.pendingShareBuffer != nil)")
@@ -2101,6 +2110,7 @@ struct AIChatView: View {
             thinkingLevelName: vm.currentThinkingLevel.displayName,
             fallbackTrigger: vm.fallbackTrigger,
             fallbackPulse: fallbackPulseOpacity,
+            modelBindingRevision: modelBindingRevision,
             titleLocked: titleIsVisuallyLocked
         )
     }
@@ -2223,7 +2233,7 @@ struct AIChatView: View {
                     }
             }
             .buttonStyle(.plain)
-            .disabled(!canEditTitle)
+            .disabled(!canEditTitle || titleIsVisuallyLocked)
 
             // [T-navbar-group-provider-gap 2026-07-25] Legacy row gap 1 → -1:
             // on iOS 16-18 the provider·model line (row 2) sat flush against
@@ -2419,7 +2429,8 @@ struct AIChatView: View {
         // truth — the same helper drives the gate overlay and the chat
         // list row, so all three sites lock and unlock in lockstep.
         .blur(radius: titleIsVisuallyLocked ? 8 : 0)
-        .allowsHitTesting(!titleIsVisuallyLocked)
+        // Keep model and thinking-level controls interactive while the title
+        // is visually locked; only the title editor above is disabled.
         .animation(.easeInOut(duration: 0.15), value: titleIsVisuallyLocked)
     }
 
@@ -2447,19 +2458,22 @@ struct AIChatView: View {
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
         .background(Capsule().fill(Color.secondary.opacity(0.10)))
+        // Give the compact badge a stable touch target in the navigation title.
+        .contentShape(Capsule())
         .onTapGesture {
             showThinkingLevelSheet = true
         }
         .sheet(isPresented: $showThinkingLevelSheet) {
             ThinkingLevelSheetView(
-                currentLevel: level,
+                currentLevel: vm.currentThinkingLevel,
                 availableLevels: vm.availableThinkingLevels,
                 onSelect: { newLevel in
                     vm.setThinkingLevel(newLevel)
                     showThinkingLevelSheet = false
                 }
             )
-            .presentationDetents([.medium])
+            .presentationDetents([.height(240), .medium])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -5245,6 +5259,8 @@ private struct NavTitleKey: Equatable {
     /// the gated titleView — each discrete set (6 over ~1.75s) must pierce
     /// the gate or the red pulse freezes at its first frame.
     let fallbackPulse: Double
+    /// Forces the cached toolbar title to rebuild after a session model binding changes.
+    let modelBindingRevision: Int
     /// [T-ios-navtitle-blur-stuck-after-unlock] Face ID lock state — the
     /// title's `.blur(radius: titleIsVisuallyLocked ? 8 : 0)` renders inside
     /// the gated toolbar content, so the unlock transition must pierce the
