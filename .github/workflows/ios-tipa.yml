@@ -35,7 +35,10 @@ jobs:
       - name: "Checkout nanoMuse (submodules: iSH, proot)"
         uses: actions/checkout@v4
         with:
-          repository: nano-muse/nanoMuse
+          # 指向自己的 fork，不再依赖上游 nano-muse/nanoMuse 的存活。
+          # 同步上游：在 GitHub 上点 fork 仓库的 "Sync fork"，或手动
+          #   git -C <fork> pull upstream main
+          repository: DooRoo666/nanoMuse
           ref: ${{ github.event.inputs.upstream_ref || 'main' }}
           path: upstream
           submodules: recursive
