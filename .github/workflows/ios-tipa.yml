@@ -7,6 +7,9 @@ name: iOS · TIPA (TrollStore)
 on:
   workflow_dispatch:
     inputs:
+      upstream_repo:
+        description: nanoMuse 仓库（owner/name），默认上游
+        default: nano-muse/nanoMuse
       upstream_ref:
         description: nanoMuse 的 tag/branch/commit
         default: main
@@ -35,7 +38,7 @@ jobs:
       - name: "Checkout nanoMuse (submodules: iSH, proot)"
         uses: actions/checkout@v4
         with:
-          repository: nano-muse/nanoMuse
+          repository: ${{ github.event.inputs.upstream_repo || 'nano-muse/nanoMuse' }}
           ref: ${{ github.event.inputs.upstream_ref || 'main' }}
           path: upstream
           submodules: recursive
@@ -44,7 +47,7 @@ jobs:
       - name: Record upstream identity
         run: |
           echo "NANOMUSE_SHA=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "resolved nano-muse/nanoMuse@$(git -C upstream rev-parse --short HEAD)"
+          echo "resolved ${{ github.event.inputs.upstream_repo || 'nano-muse/nanoMuse' }}@$(git -C upstream rev-parse --short HEAD)"
 
       - uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -156,3 +159,4 @@ jobs:
         if: failure()
         working-directory: upstream/android/src/ios
         run: grep -E "error:" build/xcodebuild.log | sort -u | head -30 || true
+
